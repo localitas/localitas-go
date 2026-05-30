@@ -25,10 +25,19 @@ const (
 )
 
 func DefaultCoreURL() string {
-	if _, err := os.Stat("/.dockerenv"); err == nil {
+	if isContainer() {
 		return "http://host.docker.internal:" + DefaultCorePort
 	}
 	return "http://localhost:" + DefaultCorePort
+}
+
+func isContainer() bool {
+	data, err := os.ReadFile("/proc/1/cgroup")
+	if err != nil {
+		return false
+	}
+	s := string(data)
+	return strings.Contains(s, "docker") || strings.Contains(s, "containerd") || strings.Contains(s, "kubepods")
 }
 
 // Client talks to the data app HTTP API. Safe for concurrent use: token is per-call
