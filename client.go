@@ -14,10 +14,22 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+const (
+	DefaultCorePort = "8090"
+)
+
+func DefaultCoreURL() string {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return "http://host.docker.internal:" + DefaultCorePort
+	}
+	return "http://localhost:" + DefaultCorePort
+}
 
 // Client talks to the data app HTTP API. Safe for concurrent use: token is per-call
 // via WithToken, never stored on the shared instance.
