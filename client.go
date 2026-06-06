@@ -32,6 +32,9 @@ func DefaultCoreURL() string {
 }
 
 func isContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
 	data, err := os.ReadFile("/proc/1/cgroup")
 	if err != nil {
 		return false
