@@ -24,6 +24,22 @@ const (
 	DefaultCorePort = "8090"
 )
 
+const defaultTokenPath = ".localitas/api-token"
+
+// DefaultToken reads the API token from ~/.localitas/api-token.
+// Returns empty string if the file doesn't exist.
+func DefaultToken() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(home + "/" + defaultTokenPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
 func DefaultCoreURL() string {
 	if isContainer() {
 		return "http://host.docker.internal:" + DefaultCorePort
