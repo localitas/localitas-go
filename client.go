@@ -503,3 +503,54 @@ func (c *Client) VaultGetSecrets(ctx context.Context, publicID string) (map[stri
 	}
 	return out, nil
 }
+
+// MetricPoint represents a single time series data point.
+type MetricPoint struct {
+	Name      string            `json:"name"`
+	Value     float64           `json:"value"`
+	Type      string            `json:"type,omitempty"`
+	Tags      map[string]string `json:"tags,omitempty"`
+	Timestamp *time.Time        `json:"timestamp,omitempty"`
+}
+
+// IngestMetrics sends metrics to the TSDB via JSON.
+func (c *Client) IngestMetrics(ctx context.Context, metrics []MetricPoint) (int, error) {
+	var out struct {
+		Accepted int `json:"accepted"`
+	}
+	if err := c.do(ctx, "POST", "/apps/tsdb/api/ingest", map[string]interface{}{"metrics": metrics}, &out); err != nil {
+		return 0, err
+	}
+	return out.Accepted, nil
+}
+
+// IngestDogStatsD sends metrics in DogStatsD text format.
+// Each line is in the format: metric.name:value|type|#tag1:val1,tag2:val2
+func (c *Client) IngestDogStatsD(ctx context.Context, lines string) (int, error) {
+	reqURL := c.baseURL + "/apps/tsdb/api/ingest"
+	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, strings.NewReader(lines))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("ingest failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var out struct {
+		Accepted int `json:"accepted"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	return out.Accepted, nil
+}

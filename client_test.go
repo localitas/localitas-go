@@ -198,3 +198,57 @@ func TestSQLExec(t *testing.T) {
 		t.Errorf("expected RowsAffected=1, got %d", got.RowsAffected)
 	}
 }
+
+func TestIngestMetrics(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/apps/tsdb/api/ingest" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("expected application/json, got %s", r.Header.Get("Content-Type"))
+		}
+		var req struct {
+			Metrics []MetricPoint `json:"metrics"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]int{"accepted": len(req.Metrics)})
+	}))
+	defer ts.Close()
+
+	c := New(ts.URL)
+	now := time.Now().UTC()
+	accepted, err := c.IngestMetrics(context.Background(), []MetricPoint{
+		{Name: "test.metric", Value: 42.0, Tags: map[string]string{"host": "web-1"}, Timestamp: &now},
+		{Name: "test.other", Value: 10.0},
+	})
+	if err != nil {
+		t.Fatalf("IngestMetrics failed: %v", err)
+	}
+	if accepted != 2 {
+		t.Errorf("expected 2 accepted, got %d", accepted)
+	}
+}
+
+func TestIngestDogStatsD(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/apps/tsdb/api/ingest" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Content-Type") != "text/plain" {
+			t.Errorf("expected text/plain, got %s", r.Header.Get("Content-Type"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]int{"accepted": 2})
+	}))
+	defer ts.Close()
+
+	c := New(ts.URL)
+	accepted, err := c.IngestDogStatsD(context.Background(), "cpu.usage:75.5|g|#host:web-1\nmem.free:2048|g|#host:web-1")
+	if err != nil {
+		t.Fatalf("IngestDogStatsD failed: %v", err)
+	}
+	if accepted != 2 {
+		t.Errorf("expected 2 accepted, got %d", accepted)
+	}
+}
