@@ -1,10 +1,15 @@
 package client
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestDefaultCoreURL_ReturnsLocalhost(t *testing.T) {
@@ -50,5 +55,146 @@ func TestDefaultToken_MissingFile(t *testing.T) {
 	token := DefaultToken()
 	if token != "" {
 		t.Fatalf("expected empty token, got %q", token)
+	}
+}
+
+func TestWithToken_SetsAuthorizationHeader(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]Database{})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL).WithToken("test-bearer-token")
+	_, err := c.ListDatabases(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotAuth != "Bearer test-bearer-token" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer test-bearer-token")
+	}
+}
+
+func TestWithHTTPClient_UsesCustomClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]Database{})
+	}))
+	defer srv.Close()
+
+	custom := &http.Client{Timeout: 5 * time.Second}
+	c := New(srv.URL).WithHTTPClient(custom)
+	_, err := c.ListDatabases(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestListDatabases(t *testing.T) {
+	dbs := []Database{
+		{ID: "db1", Name: "mydb", OwnerID: "u1"},
+		{ID: "db2", Name: "other", OwnerID: "u2"},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/apps/data/api/databases" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(dbs)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL).WithToken("tok")
+	got, err := c.ListDatabases(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 databases, got %d", len(got))
+	}
+	if got[0].ID != "db1" || got[1].Name != "other" {
+		t.Errorf("unexpected database data: %+v", got)
+	}
+}
+
+func TestCreateDatabase(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/apps/data/api/databases" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["name"] != "newdb" {
+			t.Errorf("expected name=newdb, got %v", body["name"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Database{ID: "db-new", Name: "newdb", OwnerID: "u1"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL).WithToken("tok")
+	db, err := c.CreateDatabase(context.Background(), "newdb")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if db.ID != "db-new" {
+		t.Errorf("expected ID=db-new, got %s", db.ID)
+	}
+	if db.Name != "newdb" {
+		t.Errorf("expected Name=newdb, got %s", db.Name)
+	}
+}
+
+func TestSQLQuery(t *testing.T) {
+	result := SQLQueryResult{
+		Columns: []string{"id", "name"},
+		Types:   []string{"INTEGER", "TEXT"},
+		Rows:    [][]interface{}{{1, "alice"}, {2, "bob"}},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/apps/data/api/databases/db1/query" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL).WithToken("tok")
+	got, err := c.SQLQuery(context.Background(), "db1", "SELECT id, name FROM users")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Columns) != 2 {
+		t.Fatalf("expected 2 columns, got %d", len(got.Columns))
+	}
+	if len(got.Rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(got.Rows))
+	}
+}
+
+func TestSQLExec(t *testing.T) {
+	result := SQLExecResult{LastInsertID: 42, RowsAffected: 1}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/apps/data/api/databases/db1/exec" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL).WithToken("tok")
+	got, err := c.SQLExec(context.Background(), "db1", "INSERT INTO users (name) VALUES (?)", "charlie")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.LastInsertID != 42 {
+		t.Errorf("expected LastInsertID=42, got %d", got.LastInsertID)
+	}
+	if got.RowsAffected != 1 {
+		t.Errorf("expected RowsAffected=1, got %d", got.RowsAffected)
 	}
 }
