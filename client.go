@@ -315,6 +315,16 @@ func (c *Client) ensureServiceRegistry(ctx context.Context) (string, error) {
 	return db.ID, nil
 }
 
+func (c *Client) RegisterExternalApp(ctx context.Context, name, displayName, appURL, icon string) error {
+	body := map[string]string{
+		"name":         name,
+		"display_name": displayName,
+		"url":          appURL,
+		"icon":         icon,
+	}
+	return c.do(ctx, "POST", "/apps/ext", body, nil)
+}
+
 func (c *Client) RegisterService(ctx context.Context, name, serviceURL string) error {
 	dbID, err := c.ensureServiceRegistry(ctx)
 	if err != nil {
