@@ -24,20 +24,33 @@ const (
 	DefaultCorePort = "8090"
 )
 
-const defaultTokenPath = ".localitas/api-token"
-
-// DefaultToken reads the API token from ~/.localitas/api-token.
-// Returns empty string if the file doesn't exist.
+// DefaultToken reads the API token from ~/.localitas/config-core.yaml (core.auth.api_token).
+// Returns empty string if not found.
 func DefaultToken() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	data, err := os.ReadFile(home + "/" + defaultTokenPath)
+	return readAPITokenFromConfig(home + "/.localitas/config-core.yaml")
+}
+
+func readAPITokenFromConfig(path string) string {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(data))
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "api_token:") {
+			val := strings.TrimPrefix(trimmed, "api_token:")
+			val = strings.TrimSpace(val)
+			val = strings.Trim(val, "\"'")
+			if strings.HasPrefix(val, "lt_") {
+				return val
+			}
+		}
+	}
+	return ""
 }
 
 func DefaultCoreURL() string {

@@ -30,19 +30,19 @@ func TestIsContainer_NonLinux(t *testing.T) {
 	}
 }
 
-func TestDefaultToken_ReadsFile(t *testing.T) {
+func TestDefaultToken_ReadsConfig(t *testing.T) {
 	dir := t.TempDir()
-	tokenDir := filepath.Join(dir, ".localitas")
-	os.MkdirAll(tokenDir, 0755)
-	os.WriteFile(filepath.Join(tokenDir, "api-token"), []byte("lt_test123\n"), 0600)
+	configDir := filepath.Join(dir, ".localitas")
+	os.MkdirAll(configDir, 0755)
+	os.WriteFile(filepath.Join(configDir, "config-core.yaml"), []byte("core:\n  auth:\n    api_token: lt_from_config\n"), 0600)
 
 	origHome := os.Getenv("HOME")
 	os.Setenv("HOME", dir)
 	defer os.Setenv("HOME", origHome)
 
 	token := DefaultToken()
-	if token != "lt_test123" {
-		t.Fatalf("expected lt_test123, got %q", token)
+	if token != "lt_from_config" {
+		t.Fatalf("expected lt_from_config, got %q", token)
 	}
 }
 
