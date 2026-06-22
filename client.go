@@ -446,6 +446,13 @@ func (c *Client) RemoveResourceMember(ctx context.Context, app, resourceType, re
 
 // ----- Transport -------------------------------------------------------------
 
+// Do makes an authenticated API call. Use this for app-specific endpoints
+// not covered by named methods. body is JSON-marshalled if non-nil.
+// out is JSON-decoded from the response if non-nil.
+func (c *Client) Do(ctx context.Context, method, path string, body any, out any) error {
+	return c.do(ctx, method, path, body, out)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
 	var reqBody io.Reader
 	if body != nil {
