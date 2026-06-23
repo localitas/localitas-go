@@ -167,6 +167,127 @@ func (r *CacheRef) GetSet(ctx context.Context, key, value string, ttl time.Durat
 	return out.OldValue, out.HadOld, nil
 }
 
+// IncrWithTTL atomically increments a key and sets its TTL only if the key
+// is new. Existing keys keep their current TTL. Ideal for rate limiting:
+//
+//	count, _ := cache.IncrWithTTL(ctx, "rate:ip:1.2.3.4", 1, 60*time.Second)
+//	if count > 100 { /* rate limited */ }
+func (r *CacheRef) IncrWithTTL(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+	var out struct{ Value int64 `json:"value"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/incrttl/%s", url.PathEscape(r.name), key)
+	if err := r.client.do(ctx, "POST", path, map[string]interface{}{
+		"delta": delta, "ttl": int(ttl.Seconds()),
+	}, &out); err != nil {
+		return 0, err
+	}
+	return out.Value, nil
+}
+
+// --- Sorted Set operations ---
+
+// SortedSetRef is a reference to a named sorted set within a cache.
+// Members are ordered by score (ascending). Useful for leaderboards,
+// priority queues, and time-window rate limiting.
+type SortedSetRef struct {
+	cache *CacheRef
+	name  string
+}
+
+// SortedSetEntry represents a member with its score.
+type SortedSetEntry struct {
+	Member string  `json:"member"`
+	Score  float64 `json:"score"`
+}
+
+// SortedSet returns a SortedSetRef for sorted set operations.
+//
+//	leaderboard := cache.SortedSet("leaderboard")
+//	leaderboard.Add(ctx, client.SortedSetEntry{Member: "player1", Score: 1500})
+//	top10, _ := leaderboard.Range(ctx, 0, 9)
+func (r *CacheRef) SortedSet(name string) *SortedSetRef {
+	return &SortedSetRef{cache: r, name: name}
+}
+
+// Add adds or updates members with scores. Returns the number of new members added.
+func (z *SortedSetRef) Add(ctx context.Context, entries ...SortedSetEntry) (int64, error) {
+	var out struct{ Added int64 `json:"added"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/add", url.PathEscape(z.cache.name), url.PathEscape(z.name))
+	if err := z.cache.client.do(ctx, "POST", path, map[string]interface{}{"entries": entries}, &out); err != nil {
+		return 0, err
+	}
+	return out.Added, nil
+}
+
+// Score returns the score of a member.
+func (z *SortedSetRef) Score(ctx context.Context, member string) (float64, error) {
+	var out struct{ Score float64 `json:"score"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/score/%s",
+		url.PathEscape(z.cache.name), url.PathEscape(z.name), url.PathEscape(member))
+	if err := z.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return 0, err
+	}
+	return out.Score, nil
+}
+
+// Rank returns the 0-based rank of a member (lowest score = rank 0).
+func (z *SortedSetRef) Rank(ctx context.Context, member string) (int64, error) {
+	var out struct{ Rank int64 `json:"rank"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/rank/%s",
+		url.PathEscape(z.cache.name), url.PathEscape(z.name), url.PathEscape(member))
+	if err := z.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return -1, err
+	}
+	return out.Rank, nil
+}
+
+// Range returns members by rank range (inclusive, 0-based, negative from end).
+func (z *SortedSetRef) Range(ctx context.Context, start, stop int) ([]SortedSetEntry, error) {
+	var out struct{ Entries []SortedSetEntry `json:"entries"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s?start=%d&stop=%d",
+		url.PathEscape(z.cache.name), url.PathEscape(z.name), start, stop)
+	if err := z.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Entries, nil
+}
+
+// RangeByScore returns members with scores between min and max (inclusive).
+func (z *SortedSetRef) RangeByScore(ctx context.Context, min, max float64) ([]SortedSetEntry, error) {
+	var out struct{ Entries []SortedSetEntry `json:"entries"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/byscore?min=%f&max=%f",
+		url.PathEscape(z.cache.name), url.PathEscape(z.name), min, max)
+	if err := z.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Entries, nil
+}
+
+// Rem removes members. Returns the number removed.
+func (z *SortedSetRef) Rem(ctx context.Context, members ...string) (int64, error) {
+	var out struct{ Removed int64 `json:"removed"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/rem", url.PathEscape(z.cache.name), url.PathEscape(z.name))
+	if err := z.cache.client.do(ctx, "POST", path, map[string]interface{}{"members": members}, &out); err != nil {
+		return 0, err
+	}
+	return out.Removed, nil
+}
+
+// IncrBy increments a member's score by delta. Creates with delta as score if new.
+func (z *SortedSetRef) IncrBy(ctx context.Context, member string, delta float64) (float64, error) {
+	var out struct{ Score float64 `json:"score"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/incrby", url.PathEscape(z.cache.name), url.PathEscape(z.name))
+	if err := z.cache.client.do(ctx, "POST", path, map[string]interface{}{"member": member, "delta": delta}, &out); err != nil {
+		return 0, err
+	}
+	return out.Score, nil
+}
+
+// Del deletes the entire sorted set.
+func (z *SortedSetRef) Del(ctx context.Context) error {
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s", url.PathEscape(z.cache.name), url.PathEscape(z.name))
+	return z.cache.client.do(ctx, "DELETE", path, nil, nil)
+}
+
 // --- List operations (double-headed deque) ---
 
 // ListRef is a reference to a named list within a cache.
