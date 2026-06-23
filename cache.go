@@ -309,7 +309,16 @@ func (z *SortedSetRef) Del(ctx context.Context) error {
 type PubSubRef struct {
 	cache   *CacheRef
 	channel string
-	maxSize int
+	opts    PubSubOpts
+}
+
+// PubSubOpts controls retention for a durable pub/sub channel.
+type PubSubOpts struct {
+	// MaxSize bounds the channel by message count. 0 = unbounded by count.
+	MaxSize int
+	// MaxAge auto-expires messages older than this duration on each publish.
+	// 0 = unbounded by age. Example: 14 * 24 * time.Hour = 2 weeks.
+	MaxAge time.Duration
 }
 
 // PubSubMessage represents a published message with its sequence number.
@@ -320,21 +329,36 @@ type PubSubMessage struct {
 }
 
 // PubSub returns a PubSubRef for durable pub/sub operations on a channel.
-// Set maxSize > 0 for bounded channels that auto-trim oldest messages.
-// Set maxSize = 0 for unbounded channels.
-func (r *CacheRef) PubSub(channel string, maxSize int) *PubSubRef {
-	return &PubSubRef{cache: r, channel: channel, maxSize: maxSize}
+//
+//	// Bounded by count — keeps last 1000 messages
+//	ch := cache.PubSub("events", client.PubSubOpts{MaxSize: 1000})
+//
+//	// Bounded by age — auto-expires after 2 weeks
+//	ch := cache.PubSub("notifications", client.PubSubOpts{MaxAge: 14 * 24 * time.Hour})
+//
+//	// Both — whichever limit is hit first
+//	ch := cache.PubSub("logs", client.PubSubOpts{MaxSize: 10000, MaxAge: 7 * 24 * time.Hour})
+//
+//	// Unbounded
+//	ch := cache.PubSub("audit", client.PubSubOpts{})
+func (r *CacheRef) PubSub(channel string, opts PubSubOpts) *PubSubRef {
+	return &PubSubRef{cache: r, channel: channel, opts: opts}
 }
 
 // Publish appends a message to the channel. Returns the sequence number.
-// Bounded channels auto-trim oldest messages after publish.
+// Bounded channels auto-trim by count (MaxSize) and/or age (MaxAge).
 func (p *PubSubRef) Publish(ctx context.Context, value string) (int64, error) {
 	var out struct{ Seq int64 `json:"seq"` }
 	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/publish",
 		url.PathEscape(p.cache.name), url.PathEscape(p.channel))
-	if err := p.cache.client.do(ctx, "POST", path, map[string]interface{}{
-		"value": value, "max_size": p.maxSize,
-	}, &out); err != nil {
+	body := map[string]interface{}{"value": value}
+	if p.opts.MaxSize > 0 {
+		body["max_size"] = p.opts.MaxSize
+	}
+	if p.opts.MaxAge > 0 {
+		body["max_age_seconds"] = int(p.opts.MaxAge.Seconds())
+	}
+	if err := p.cache.client.do(ctx, "POST", path, body, &out); err != nil {
 		return 0, err
 	}
 	return out.Seq, nil
