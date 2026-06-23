@@ -132,6 +132,228 @@ func (r *CacheRef) Expire(ctx context.Context, key string, ttl time.Duration) er
 	}, nil)
 }
 
+// --- List operations (double-headed deque) ---
+
+// ListRef is a reference to a named list within a cache.
+type ListRef struct {
+	cache *CacheRef
+	name  string
+}
+
+// List returns a ListRef for list operations within this cache.
+func (r *CacheRef) List(name string) *ListRef {
+	return &ListRef{cache: r, name: name}
+}
+
+// LPush prepends values to the head of the list. Returns the new length.
+func (l *ListRef) LPush(ctx context.Context, values ...string) (int64, error) {
+	var out struct{ Length int64 `json:"length"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s/lpush", url.PathEscape(l.cache.name), url.PathEscape(l.name))
+	if err := l.cache.client.do(ctx, "POST", path, map[string]interface{}{"values": values}, &out); err != nil {
+		return 0, err
+	}
+	return out.Length, nil
+}
+
+// RPush appends values to the tail of the list. Returns the new length.
+func (l *ListRef) RPush(ctx context.Context, values ...string) (int64, error) {
+	var out struct{ Length int64 `json:"length"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s/rpush", url.PathEscape(l.cache.name), url.PathEscape(l.name))
+	if err := l.cache.client.do(ctx, "POST", path, map[string]interface{}{"values": values}, &out); err != nil {
+		return 0, err
+	}
+	return out.Length, nil
+}
+
+// LPop removes and returns the first element.
+func (l *ListRef) LPop(ctx context.Context) (string, error) {
+	var out struct{ Value string `json:"value"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s/lpop", url.PathEscape(l.cache.name), url.PathEscape(l.name))
+	if err := l.cache.client.do(ctx, "POST", path, nil, &out); err != nil {
+		return "", err
+	}
+	return out.Value, nil
+}
+
+// RPop removes and returns the last element.
+func (l *ListRef) RPop(ctx context.Context) (string, error) {
+	var out struct{ Value string `json:"value"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s/rpop", url.PathEscape(l.cache.name), url.PathEscape(l.name))
+	if err := l.cache.client.do(ctx, "POST", path, nil, &out); err != nil {
+		return "", err
+	}
+	return out.Value, nil
+}
+
+// Range returns elements from start to stop (inclusive, 0-based, negative indices from end).
+func (l *ListRef) Range(ctx context.Context, start, stop int) ([]string, error) {
+	var out struct{ Values []string `json:"values"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s?start=%d&stop=%d",
+		url.PathEscape(l.cache.name), url.PathEscape(l.name), start, stop)
+	if err := l.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Values, nil
+}
+
+// Len returns the length of the list.
+func (l *ListRef) Len(ctx context.Context) (int64, error) {
+	var out struct{ Length int64 `json:"length"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s?start=0&stop=-1",
+		url.PathEscape(l.cache.name), url.PathEscape(l.name))
+	if err := l.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return 0, err
+	}
+	return out.Length, nil
+}
+
+// Del deletes the entire list.
+func (l *ListRef) Del(ctx context.Context) error {
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s", url.PathEscape(l.cache.name), url.PathEscape(l.name))
+	return l.cache.client.do(ctx, "DELETE", path, nil, nil)
+}
+
+// --- Set operations ---
+
+// SetRef is a reference to a named set within a cache.
+type SetRef struct {
+	cache *CacheRef
+	name  string
+}
+
+// Set returns a SetRef for set operations within this cache.
+func (r *CacheRef) Set_(name string) *SetRef {
+	return &SetRef{cache: r, name: name}
+}
+
+// Add adds members to the set. Returns the number of new members added.
+func (s *SetRef) Add(ctx context.Context, members ...string) (int64, error) {
+	var out struct{ Added int64 `json:"added"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/set/%s/add", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	if err := s.cache.client.do(ctx, "POST", path, map[string]interface{}{"members": members}, &out); err != nil {
+		return 0, err
+	}
+	return out.Added, nil
+}
+
+// Rem removes members from the set. Returns the number removed.
+func (s *SetRef) Rem(ctx context.Context, members ...string) (int64, error) {
+	var out struct{ Removed int64 `json:"removed"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/set/%s/rem", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	if err := s.cache.client.do(ctx, "POST", path, map[string]interface{}{"members": members}, &out); err != nil {
+		return 0, err
+	}
+	return out.Removed, nil
+}
+
+// Members returns all members of the set.
+func (s *SetRef) Members(ctx context.Context) ([]string, error) {
+	var out struct{ Members []string `json:"members"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/set/%s", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	if err := s.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Members, nil
+}
+
+// Del deletes the entire set.
+func (s *SetRef) Del(ctx context.Context) error {
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/set/%s", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	return s.cache.client.do(ctx, "DELETE", path, nil, nil)
+}
+
+// --- Queue operations (FIFO) ---
+
+// QueueRef is a reference to a named queue within a cache.
+type QueueRef struct {
+	cache   *CacheRef
+	name    string
+	maxSize int
+}
+
+// Queue returns a QueueRef for FIFO queue operations. Pass 0 for unbounded.
+func (r *CacheRef) Queue(name string, maxSize int) *QueueRef {
+	return &QueueRef{cache: r, name: name, maxSize: maxSize}
+}
+
+// Enqueue adds a value to the back of the queue.
+func (q *QueueRef) Enqueue(ctx context.Context, value string) (int64, error) {
+	var out struct{ Length int64 `json:"length"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/queue/%s/enqueue", url.PathEscape(q.cache.name), url.PathEscape(q.name))
+	if err := q.cache.client.do(ctx, "POST", path, map[string]interface{}{
+		"value": value, "max_size": q.maxSize,
+	}, &out); err != nil {
+		return 0, err
+	}
+	return out.Length, nil
+}
+
+// Dequeue removes and returns the front element (oldest).
+func (q *QueueRef) Dequeue(ctx context.Context) (string, error) {
+	var out struct{ Value string `json:"value"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/queue/%s/dequeue", url.PathEscape(q.cache.name), url.PathEscape(q.name))
+	if err := q.cache.client.do(ctx, "POST", path, nil, &out); err != nil {
+		return "", err
+	}
+	return out.Value, nil
+}
+
+// Peek returns the front element without removing it.
+func (q *QueueRef) Peek(ctx context.Context) (string, error) {
+	var out struct{ Value string `json:"value"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/queue/%s", url.PathEscape(q.cache.name), url.PathEscape(q.name))
+	if err := q.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return "", err
+	}
+	return out.Value, nil
+}
+
+// --- Stack operations (LIFO) ---
+
+// StackRef is a reference to a named stack within a cache.
+type StackRef struct {
+	cache   *CacheRef
+	name    string
+	maxSize int
+}
+
+// Stack returns a StackRef for LIFO stack operations. Pass 0 for unbounded.
+func (r *CacheRef) Stack(name string, maxSize int) *StackRef {
+	return &StackRef{cache: r, name: name, maxSize: maxSize}
+}
+
+// Push adds a value to the top of the stack.
+func (s *StackRef) Push(ctx context.Context, value string) (int64, error) {
+	var out struct{ Length int64 `json:"length"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/stack/%s/push", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	if err := s.cache.client.do(ctx, "POST", path, map[string]interface{}{
+		"value": value, "max_size": s.maxSize,
+	}, &out); err != nil {
+		return 0, err
+	}
+	return out.Length, nil
+}
+
+// Pop removes and returns the top element (newest).
+func (s *StackRef) Pop(ctx context.Context) (string, error) {
+	var out struct{ Value string `json:"value"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/stack/%s/pop", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	if err := s.cache.client.do(ctx, "POST", path, nil, &out); err != nil {
+		return "", err
+	}
+	return out.Value, nil
+}
+
+// Peek returns the top element without removing it.
+func (s *StackRef) Peek(ctx context.Context) (string, error) {
+	var out struct{ Value string `json:"value"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/stack/%s", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	if err := s.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return "", err
+	}
+	return out.Value, nil
+}
+
 // --- Cache management (on Client) ---
 
 // CacheStats holds hit/miss counters and derived metrics for a named cache.
