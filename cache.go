@@ -132,6 +132,41 @@ func (r *CacheRef) Expire(ctx context.Context, key string, ttl time.Duration) er
 	}, nil)
 }
 
+// SetNX sets a key only if it does not already exist (or has expired).
+// Returns true if the key was set, false if it already existed.
+// Atomic — safe for distributed locks.
+//
+//	acquired, _ := cache.SetNX(ctx, "lock:resource", "owner-id", 30*time.Second)
+//	if acquired { /* got the lock */ }
+func (r *CacheRef) SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
+	var out struct {
+		Acquired bool `json:"acquired"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/setnx/%s", url.PathEscape(r.name), key)
+	if err := r.client.do(ctx, "POST", path, map[string]interface{}{
+		"value": value, "ttl": int(ttl.Seconds()),
+	}, &out); err != nil {
+		return false, err
+	}
+	return out.Acquired, nil
+}
+
+// GetSet atomically sets a key to a new value and returns the old value.
+// Returns ("", false, nil) if the key didn't exist.
+func (r *CacheRef) GetSet(ctx context.Context, key, value string, ttl time.Duration) (string, bool, error) {
+	var out struct {
+		OldValue string `json:"old_value"`
+		HadOld   bool   `json:"had_old"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/getset/%s", url.PathEscape(r.name), key)
+	if err := r.client.do(ctx, "POST", path, map[string]interface{}{
+		"value": value, "ttl": int(ttl.Seconds()),
+	}, &out); err != nil {
+		return "", false, err
+	}
+	return out.OldValue, out.HadOld, nil
+}
+
 // --- List operations (double-headed deque) ---
 
 // ListRef is a reference to a named list within a cache.
