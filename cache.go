@@ -222,7 +222,7 @@ type SetRef struct {
 }
 
 // Set returns a SetRef for set operations within this cache.
-func (r *CacheRef) Set_(name string) *SetRef {
+func (r *CacheRef) SetStore(name string) *SetRef {
 	return &SetRef{cache: r, name: name}
 }
 
