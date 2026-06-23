@@ -51,6 +51,10 @@ func getOrCreateKey() ([]byte, error) {
 	return encryptionKey, nil
 }
 
+// Encrypt encrypts a plaintext string using AES-256-GCM with a key stored
+// at ~/.localitas/secret.key. The key is auto-generated on first use.
+// Returns a string prefixed with "enc:" followed by base64-encoded ciphertext.
+// Returns empty string for empty input.
 func Encrypt(plaintext string) (string, error) {
 	if plaintext == "" {
 		return "", nil
@@ -80,6 +84,9 @@ func Encrypt(plaintext string) (string, error) {
 	return "enc:" + base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
+// Decrypt decrypts a string previously encrypted with Encrypt.
+// If the input doesn't start with "enc:", it is returned as-is (passthrough
+// for plaintext values). Returns empty string for empty input.
 func Decrypt(encoded string) (string, error) {
 	if encoded == "" {
 		return "", nil

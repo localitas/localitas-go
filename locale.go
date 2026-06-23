@@ -172,10 +172,17 @@ func detectCountryCode() string {
 	return ""
 }
 
+// CountryCode returns the ISO 3166-1 alpha-2 country code detected from the
+// system timezone (e.g. "us", "gb", "jp"). Returns empty string if the
+// timezone cannot be mapped to a country.
 func CountryCode() string {
 	return detectedCountryCode
 }
 
+// LocationBias returns a Nominatim-compatible query string parameter for
+// location-biased search results based on the system timezone. Returns a
+// viewbox parameter for well-known cities, a countrycodes parameter for
+// known countries, or empty string if no bias can be determined.
 func LocationBias() string {
 	tz := resolveTimezone()
 	if vb, ok := tzViewboxMap[tz]; ok {
