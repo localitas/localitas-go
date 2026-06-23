@@ -288,6 +288,133 @@ func (z *SortedSetRef) Del(ctx context.Context) error {
 	return z.cache.client.do(ctx, "DELETE", path, nil, nil)
 }
 
+// --- DurablePubSub operations ---
+
+// PubSubRef is a reference to a durable pub/sub channel within a cache.
+// Supports both broadcast (every consumer sees every message) and consumer
+// groups (round-robin with acknowledgment). Messages persist until trimmed.
+//
+// Broadcast:
+//
+//	ch := cache.PubSub("events", 1000)  // bounded at 1000 messages
+//	ch.Publish(ctx, `{"type":"order.created"}`)
+//	msgs, _ := ch.Read(ctx, "audit-service", 10)
+//
+// Consumer Group:
+//
+//	ch.CreateGroup(ctx, "workers")
+//	msg, _ := ch.Claim(ctx, "workers", "worker-1")
+//	process(msg)
+//	ch.Ack(ctx, "workers", msg.Seq)
+type PubSubRef struct {
+	cache   *CacheRef
+	channel string
+	maxSize int
+}
+
+// PubSubMessage represents a published message with its sequence number.
+type PubSubMessage struct {
+	Seq       int64  `json:"seq"`
+	Value     string `json:"value"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// PubSub returns a PubSubRef for durable pub/sub operations on a channel.
+// Set maxSize > 0 for bounded channels that auto-trim oldest messages.
+// Set maxSize = 0 for unbounded channels.
+func (r *CacheRef) PubSub(channel string, maxSize int) *PubSubRef {
+	return &PubSubRef{cache: r, channel: channel, maxSize: maxSize}
+}
+
+// Publish appends a message to the channel. Returns the sequence number.
+// Bounded channels auto-trim oldest messages after publish.
+func (p *PubSubRef) Publish(ctx context.Context, value string) (int64, error) {
+	var out struct{ Seq int64 `json:"seq"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/publish",
+		url.PathEscape(p.cache.name), url.PathEscape(p.channel))
+	if err := p.cache.client.do(ctx, "POST", path, map[string]interface{}{
+		"value": value, "max_size": p.maxSize,
+	}, &out); err != nil {
+		return 0, err
+	}
+	return out.Seq, nil
+}
+
+// Read returns new messages since this consumer's last read position.
+// Each consumer tracks its own cursor independently (broadcast pattern).
+// Automatically resumes from where it left off after reconnect.
+func (p *PubSubRef) Read(ctx context.Context, consumerID string, count int) ([]PubSubMessage, error) {
+	var out struct{ Messages []PubSubMessage `json:"messages"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/read?consumer=%s&count=%d",
+		url.PathEscape(p.cache.name), url.PathEscape(p.channel),
+		url.QueryEscape(consumerID), count)
+	if err := p.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Messages, nil
+}
+
+// CreateGroup creates a consumer group. The group starts consuming from
+// the current end of the channel (new messages only).
+func (p *PubSubRef) CreateGroup(ctx context.Context, groupName string) error {
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/group/%s",
+		url.PathEscape(p.cache.name), url.PathEscape(p.channel), url.PathEscape(groupName))
+	return p.cache.client.do(ctx, "POST", path, nil, nil)
+}
+
+// Claim delivers the next unclaimed message to a consumer in a group
+// (round-robin). The message is marked pending until Ack is called.
+// Returns nil if no messages are available.
+func (p *PubSubRef) Claim(ctx context.Context, groupName, consumerID string) (*PubSubMessage, error) {
+	var out struct{ Message *PubSubMessage `json:"message"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/group/%s/claim?consumer=%s",
+		url.PathEscape(p.cache.name), url.PathEscape(p.channel),
+		url.PathEscape(groupName), url.QueryEscape(consumerID))
+	if err := p.cache.client.do(ctx, "POST", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Message, nil
+}
+
+// Ack acknowledges that a message has been processed. Removes it from
+// the pending list.
+func (p *PubSubRef) Ack(ctx context.Context, groupName string, seq int64) error {
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/group/%s/ack",
+		url.PathEscape(p.cache.name), url.PathEscape(p.channel), url.PathEscape(groupName))
+	return p.cache.client.do(ctx, "POST", path, map[string]int64{"seq": seq}, nil)
+}
+
+// Reclaim returns messages that have been pending longer than timeout
+// without being acked. Re-assigns them to the given consumer.
+func (p *PubSubRef) Reclaim(ctx context.Context, groupName, consumerID string, timeout time.Duration) ([]PubSubMessage, error) {
+	var out struct{ Messages []PubSubMessage `json:"messages"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/group/%s/reclaim?consumer=%s&timeout=%d",
+		url.PathEscape(p.cache.name), url.PathEscape(p.channel),
+		url.PathEscape(groupName), url.QueryEscape(consumerID), int(timeout.Seconds()))
+	if err := p.cache.client.do(ctx, "POST", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Messages, nil
+}
+
+// Trim removes messages by age or size.
+func (p *PubSubRef) Trim(ctx context.Context, maxAge time.Duration) (int64, error) {
+	var out struct{ Removed int64 `json:"removed"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/trim",
+		url.PathEscape(p.cache.name), url.PathEscape(p.channel))
+	if err := p.cache.client.do(ctx, "POST", path, map[string]int{"max_age": int(maxAge.Seconds())}, &out); err != nil {
+		return 0, err
+	}
+	return out.Removed, nil
+}
+
+// Del deletes the channel and all its messages, cursors, and groups.
+func (p *PubSubRef) Del(ctx context.Context) error {
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s",
+		url.PathEscape(p.cache.name), url.PathEscape(p.channel))
+	return p.cache.client.do(ctx, "DELETE", path, nil, nil)
+}
+
 // --- List operations (double-headed deque) ---
 
 // ListRef is a reference to a named list within a cache.
