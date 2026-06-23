@@ -354,6 +354,85 @@ func (s *StackRef) Peek(ctx context.Context) (string, error) {
 	return out.Value, nil
 }
 
+// --- Hash operations ---
+
+// HashRef is a reference to a named hash (field→value map) within a cache.
+type HashRef struct {
+	cache *CacheRef
+	name  string
+}
+
+// Hash returns a HashRef for hash operations within this cache.
+// Hashes store field→value maps — useful for objects without JSON overhead.
+//
+//	user := cache.Hash("user:123")
+//	user.Set(ctx, map[string]string{"name": "Alice", "email": "alice@example.com"})
+//	name, _ := user.Get(ctx, "name")
+func (r *CacheRef) Hash(name string) *HashRef {
+	return &HashRef{cache: r, name: name}
+}
+
+// Set sets one or more field-value pairs. Upserts existing fields.
+func (h *HashRef) Set(ctx context.Context, fields map[string]string) error {
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s", url.PathEscape(h.cache.name), url.PathEscape(h.name))
+	return h.cache.client.do(ctx, "PUT", path, map[string]interface{}{"fields": fields}, nil)
+}
+
+// Get returns the value of a single field.
+func (h *HashRef) Get(ctx context.Context, field string) (string, error) {
+	var out struct{ Value string `json:"value"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s/field/%s",
+		url.PathEscape(h.cache.name), url.PathEscape(h.name), url.PathEscape(field))
+	if err := h.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return "", err
+	}
+	return out.Value, nil
+}
+
+// GetAll returns all field-value pairs.
+func (h *HashRef) GetAll(ctx context.Context) (map[string]string, error) {
+	var out struct{ Fields map[string]string `json:"fields"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s", url.PathEscape(h.cache.name), url.PathEscape(h.name))
+	if err := h.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Fields, nil
+}
+
+// Del removes one or more fields from the hash.
+func (h *HashRef) Del(ctx context.Context, fields ...string) error {
+	for _, field := range fields {
+		path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s/field/%s",
+			url.PathEscape(h.cache.name), url.PathEscape(h.name), url.PathEscape(field))
+		if err := h.cache.client.do(ctx, "DELETE", path, nil, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DelAll deletes the entire hash.
+func (h *HashRef) DelAll(ctx context.Context) error {
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s", url.PathEscape(h.cache.name), url.PathEscape(h.name))
+	return h.cache.client.do(ctx, "DELETE", path, nil, nil)
+}
+
+// ToJSON returns the hash as a JSON string.
+func (h *HashRef) ToJSON(ctx context.Context) (string, error) {
+	var out struct{ JSON string `json:"json"` }
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s/json", url.PathEscape(h.cache.name), url.PathEscape(h.name))
+	if err := h.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
+		return "", err
+	}
+	return out.JSON, nil
+}
+
+// FromJSON sets hash fields from a JSON object string.
+func (h *HashRef) FromJSON(ctx context.Context, jsonStr string) error {
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s/json", url.PathEscape(h.cache.name), url.PathEscape(h.name))
+	return h.cache.client.do(ctx, "PUT", path, map[string]string{"json": jsonStr}, nil)
+}
+
 // --- Cache management (on Client) ---
 
 // CacheStats holds hit/miss counters and derived metrics for a named cache.
