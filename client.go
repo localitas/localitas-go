@@ -428,6 +428,15 @@ func (c *Client) ListServices(ctx context.Context) ([]ServiceEntry, error) {
 
 // ----- Permissions -----------------------------------------------------------
 
+// ResourcePermission represents an access control entry for a shared resource.
+type ResourcePermission struct {
+	App          string `json:"app"`
+	ResourceType string `json:"resource_type"`
+	ResourceID   string `json:"resource_id"`
+	OwnerID      string `json:"owner_id"`
+	Permission   string `json:"permission"`
+}
+
 // ResourceMember represents a user or group with a permission level on a resource.
 type ResourceMember struct {
 	UserID     string `json:"user_id,omitempty"`
@@ -489,6 +498,74 @@ func (c *Client) RemoveResourceMember(ctx context.Context, app, resourceType, re
 	path := fmt.Sprintf("/api/permissions/%s/%s/%s/members",
 		url.PathEscape(app), url.PathEscape(resourceType), url.PathEscape(resourceID))
 	return c.do(ctx, "DELETE", path, map[string]string{"user_id": userID, "group_id": groupID}, nil)
+}
+
+// DeleteResourcePermissions removes all permission entries for a resource.
+func (c *Client) DeleteResourcePermissions(ctx context.Context, app, resourceType, resourceID string) error {
+	path := fmt.Sprintf("/api/permissions/%s/%s/%s",
+		url.PathEscape(app), url.PathEscape(resourceType), url.PathEscape(resourceID))
+	return c.do(ctx, "DELETE", path, nil, nil)
+}
+
+// ListAccessibleResources returns all resources of a given type that the
+// authenticated user can access (owned + shared via user/group grants).
+func (c *Client) ListAccessibleResources(ctx context.Context, app, resourceType string) ([]ResourcePermission, error) {
+	var result struct {
+		Resources []ResourcePermission `json:"resources"`
+	}
+	path := fmt.Sprintf("/api/permissions/accessible?app=%s&resource_type=%s",
+		url.QueryEscape(app), url.QueryEscape(resourceType))
+	if err := c.do(ctx, "GET", path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result.Resources, nil
+}
+
+// GetUserGroupIDs returns all group IDs that a user belongs to.
+func (c *Client) GetUserGroupIDs(ctx context.Context, userID string) ([]string, error) {
+	var result struct {
+		GroupIDs []string `json:"group_ids"`
+	}
+	path := fmt.Sprintf("/api/users/%s/groups", url.PathEscape(userID))
+	if err := c.do(ctx, "GET", path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result.GroupIDs, nil
+}
+
+// UserSummary represents basic user info.
+type UserSummary struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
+// ListUsers returns all users in the system.
+func (c *Client) ListUsers(ctx context.Context) ([]UserSummary, error) {
+	var result struct {
+		Users []UserSummary `json:"users"`
+	}
+	if err := c.do(ctx, "GET", "/api/users", nil, &result); err != nil {
+		return nil, err
+	}
+	return result.Users, nil
+}
+
+// UserGroup represents a user group.
+type UserGroup struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// ListGroups returns all user groups.
+func (c *Client) ListGroups(ctx context.Context) ([]UserGroup, error) {
+	var result struct {
+		Groups []UserGroup `json:"groups"`
+	}
+	if err := c.do(ctx, "GET", "/globals/settings/users/groups", nil, &result); err != nil {
+		return nil, err
+	}
+	return result.Groups, nil
 }
 
 // ----- Vault -----------------------------------------------------------------
