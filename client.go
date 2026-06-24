@@ -633,6 +633,19 @@ func (c *Client) VaultDeleteCredential(ctx context.Context, publicID string) err
 	return c.do(ctx, "DELETE", "/apps/vault/api/credentials/"+url.PathEscape(publicID), nil, nil)
 }
 
+// CreateNotificationRequest is the payload for creating a notification.
+type CreateNotificationRequest struct {
+	App     string `json:"app"`
+	Level   string `json:"level"`
+	Title   string `json:"title"`
+	Message string `json:"message"`
+}
+
+// CreateNotification creates a notification for the authenticated user.
+func (c *Client) CreateNotification(ctx context.Context, req CreateNotificationRequest) error {
+	return c.do(ctx, "POST", "/api/notifications", req, nil)
+}
+
 // ----- Metrics ---------------------------------------------------------------
 
 // MetricPoint represents a single time series data point for TSDB ingestion.
