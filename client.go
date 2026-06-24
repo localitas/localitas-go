@@ -610,6 +610,29 @@ func (c *Client) VaultGetSecrets(ctx context.Context, publicID string) (map[stri
 	return out, nil
 }
 
+// VaultCreateCredential creates a new encrypted credential.
+func (c *Client) VaultCreateCredential(ctx context.Context, name, credURL string, keychainSync bool, data interface{}) (*VaultCredentialSummary, error) {
+	var out VaultCredentialSummary
+	if err := c.do(ctx, "POST", "/apps/vault/api/credentials", map[string]interface{}{
+		"name": name, "url": credURL, "keychain_sync": keychainSync, "data": data,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// VaultUpdateCredential updates an existing credential's name, URL, and secret data.
+func (c *Client) VaultUpdateCredential(ctx context.Context, publicID, name, credURL string, keychainSync bool, data interface{}) error {
+	return c.do(ctx, "PUT", "/apps/vault/api/credentials/"+url.PathEscape(publicID), map[string]interface{}{
+		"name": name, "url": credURL, "keychain_sync": keychainSync, "data": data,
+	}, nil)
+}
+
+// VaultDeleteCredential deletes a credential by its public ID.
+func (c *Client) VaultDeleteCredential(ctx context.Context, publicID string) error {
+	return c.do(ctx, "DELETE", "/apps/vault/api/credentials/"+url.PathEscape(publicID), nil, nil)
+}
+
 // ----- Metrics ---------------------------------------------------------------
 
 // MetricPoint represents a single time series data point for TSDB ingestion.
