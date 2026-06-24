@@ -82,11 +82,24 @@ func migrateNew(name string) {
 	}
 
 	now := time.Now().UTC()
-	version := fmt.Sprintf("%s-%s-%03d",
-		now.Format("20060102"),
-		now.Format("150405"),
-		now.Nanosecond()/1000000,
-	)
+	datePrefix := now.Format("20060102") + "-" + now.Format("150405")
+
+	seq := 0
+	if entries, err := os.ReadDir("migrations"); err == nil {
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), datePrefix) {
+				if m := timestampPattern.FindStringSubmatch(e.Name()); m != nil {
+					n := 0
+					fmt.Sscanf(m[3], "%d", &n)
+					if n >= seq {
+						seq = n + 1
+					}
+				}
+			}
+		}
+	}
+
+	version := fmt.Sprintf("%s-%03d", datePrefix, seq)
 	filename := fmt.Sprintf("%s-%s.sql", version, name)
 	path := filepath.Join("migrations", filename)
 
