@@ -566,8 +566,9 @@ func (c *Client) ListUsers(ctx context.Context) ([]UserSummary, error) {
 
 // UserGroup represents a user group.
 type UserGroup struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Permission string `json:"permission"`
 }
 
 // ListGroups returns all user groups.
