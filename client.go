@@ -500,6 +500,19 @@ func (c *Client) RemoveResourceMember(ctx context.Context, app, resourceType, re
 	return c.do(ctx, "DELETE", path, map[string]string{"user_id": userID, "group_id": groupID}, nil)
 }
 
+// GetResourceOwner returns the owner ID of a resource.
+func (c *Client) GetResourceOwner(ctx context.Context, app, resourceType, resourceID string) (string, error) {
+	var result struct {
+		OwnerID string `json:"owner_id"`
+	}
+	path := fmt.Sprintf("/api/permissions/%s/%s/%s/owner",
+		url.PathEscape(app), url.PathEscape(resourceType), url.PathEscape(resourceID))
+	if err := c.do(ctx, "GET", path, nil, &result); err != nil {
+		return "", err
+	}
+	return result.OwnerID, nil
+}
+
 // DeleteResourcePermissions removes all permission entries for a resource.
 func (c *Client) DeleteResourcePermissions(ctx context.Context, app, resourceType, resourceID string) error {
 	path := fmt.Sprintf("/api/permissions/%s/%s/%s",
@@ -562,7 +575,7 @@ func (c *Client) ListGroups(ctx context.Context) ([]UserGroup, error) {
 	var result struct {
 		Groups []UserGroup `json:"groups"`
 	}
-	if err := c.do(ctx, "GET", "/globals/settings/users/groups", nil, &result); err != nil {
+	if err := c.do(ctx, "GET", "/api/groups", nil, &result); err != nil {
 		return nil, err
 	}
 	return result.Groups, nil
