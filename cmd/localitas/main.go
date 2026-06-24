@@ -14,25 +14,43 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+var configPath string
+
 func main() {
-	if len(os.Args) < 2 {
+	args := os.Args[1:]
+
+	// Parse --config flag from anywhere in args
+	var filtered []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--config" && i+1 < len(args) {
+			configPath = args[i+1]
+			i++
+		} else if strings.HasPrefix(args[i], "--config=") {
+			configPath = strings.TrimPrefix(args[i], "--config=")
+		} else {
+			filtered = append(filtered, args[i])
+		}
+	}
+	args = filtered
+
+	if len(args) < 1 {
 		printUsage()
 		os.Exit(1)
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "migrate":
-		if len(os.Args) < 3 {
+		if len(args) < 2 {
 			printMigrateUsage()
 			os.Exit(1)
 		}
-		switch os.Args[2] {
+		switch args[1] {
 		case "new":
-			if len(os.Args) < 4 {
+			if len(args) < 3 {
 				fmt.Fprintln(os.Stderr, "Usage: localitas migrate new <name>")
 				os.Exit(1)
 			}
-			migrateNew(os.Args[3])
+			migrateNew(args[2])
 		case "check":
 			migrateCheck()
 		case "status":
@@ -50,7 +68,10 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: localitas <command>")
+	fmt.Fprintln(os.Stderr, "Usage: localitas [--config <path>] <command>")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Flags:")
+	fmt.Fprintln(os.Stderr, "  --config <path>      Path to config file (default: ~/.localitas/config-core.yaml)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  migrate new <name>   Create a new migration file")
@@ -199,6 +220,20 @@ func migrateStatus() {
 	fmt.Printf("\n%d applied, %d pending\n", len(files)-pending, pending)
 }
 
+func coreURL() string {
+	if configPath != "" {
+		return client.CoreURLFromConfig(configPath)
+	}
+	return client.DefaultCoreURL()
+}
+
+func coreToken() string {
+	if configPath != "" {
+		return client.TokenFromConfig(configPath)
+	}
+	return client.DefaultToken()
+}
+
 func migrateRun() {
 	appName := detectAppName()
 	dbID := "sys_" + appName
@@ -256,6 +291,9 @@ func migrateRun() {
 }
 
 func newClient() *client.Client {
+	if configPath != "" {
+		return client.New(client.CoreURLFromConfig(configPath)).WithToken(client.TokenFromConfig(configPath))
+	}
 	return client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
 }
 

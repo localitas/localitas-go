@@ -38,7 +38,12 @@ func DefaultToken() string {
 	if err != nil {
 		return ""
 	}
-	return readAPITokenFromConfig(home + "/.localitas/config-core.yaml")
+	return TokenFromConfig(home + "/.localitas/config-core.yaml")
+}
+
+// TokenFromConfig reads the API token from the given config file path.
+func TokenFromConfig(path string) string {
+	return readAPITokenFromConfig(path)
 }
 
 func readAPITokenFromConfig(path string) string {
@@ -68,6 +73,27 @@ func DefaultCoreURL() string {
 		return "http://host.docker.internal:" + DefaultCorePort
 	}
 	return "http://localhost:" + DefaultCorePort
+}
+
+// CoreURLFromConfig reads the HTTP port from the given config file and
+// returns the base URL. Falls back to DefaultCoreURL if not found.
+func CoreURLFromConfig(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return DefaultCoreURL()
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "http_port:") {
+			val := strings.TrimPrefix(trimmed, "http_port:")
+			val = strings.TrimSpace(val)
+			val = strings.Trim(val, "\"'")
+			if val != "" && val != "0" {
+				return "http://localhost:" + val
+			}
+		}
+	}
+	return DefaultCoreURL()
 }
 
 func isContainer() bool {
