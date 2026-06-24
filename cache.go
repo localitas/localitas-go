@@ -779,7 +779,7 @@ func (c *Client) ListCaches(ctx context.Context) ([]CacheInfo, error) {
 }
 
 // DeleteCache deletes a named cache and all its data. The built-in
-// "public_paths" cache cannot be deleted.
+// "localitas_public_http_paths" cache cannot be deleted.
 func (c *Client) DeleteCache(ctx context.Context, name string) error {
 	return c.do(ctx, "DELETE", "/apps/cache/api/caches/"+url.PathEscape(name), nil, nil)
 }

@@ -320,7 +320,7 @@ func Example_cacheManagement() {
 		fmt.Printf("%s: %d keys\n", cache.Name, cache.KeyCount)
 	}
 
-	// Delete a cache (public_paths cannot be deleted)
+	// Delete a cache (localitas_public_http_paths cannot be deleted)
 	c.DeleteCache(ctx, "leaderboard")
 
 	// Flush all data in a cache (keeps the cache, removes all keys)
