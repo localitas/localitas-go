@@ -68,7 +68,7 @@ func (r *CacheRef) IncrBy(ctx context.Context, key string, delta int64) (int64, 
 	var out struct {
 		Value int64 `json:"value"`
 	}
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/incr/%s", url.PathEscape(r.name), key)
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/%s/incr", url.PathEscape(r.name), key)
 	if err := r.client.do(ctx, "POST", path, map[string]interface{}{"delta": delta}, &out); err != nil {
 		return 0, err
 	}
@@ -126,7 +126,7 @@ func (r *CacheRef) TTL(ctx context.Context, key string) (time.Duration, error) {
 // Expire sets or updates the TTL on an existing key. Returns an error
 // if the key doesn't exist.
 func (r *CacheRef) Expire(ctx context.Context, key string, ttl time.Duration) error {
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/expire/%s", url.PathEscape(r.name), key)
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/%s/expire", url.PathEscape(r.name), key)
 	return r.client.do(ctx, "POST", path, map[string]interface{}{
 		"ttl": int(ttl.Seconds()),
 	}, nil)
@@ -142,7 +142,7 @@ func (r *CacheRef) SetNX(ctx context.Context, key, value string, ttl time.Durati
 	var out struct {
 		Acquired bool `json:"acquired"`
 	}
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/setnx/%s", url.PathEscape(r.name), key)
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/%s/setnx", url.PathEscape(r.name), key)
 	if err := r.client.do(ctx, "POST", path, map[string]interface{}{
 		"value": value, "ttl": int(ttl.Seconds()),
 	}, &out); err != nil {
@@ -158,7 +158,7 @@ func (r *CacheRef) GetSet(ctx context.Context, key, value string, ttl time.Durat
 		OldValue string `json:"old_value"`
 		HadOld   bool   `json:"had_old"`
 	}
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/getset/%s", url.PathEscape(r.name), key)
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/%s/getset", url.PathEscape(r.name), key)
 	if err := r.client.do(ctx, "POST", path, map[string]interface{}{
 		"value": value, "ttl": int(ttl.Seconds()),
 	}, &out); err != nil {
@@ -173,8 +173,10 @@ func (r *CacheRef) GetSet(ctx context.Context, key, value string, ttl time.Durat
 //	count, _ := cache.IncrWithTTL(ctx, "rate:ip:1.2.3.4", 1, 60*time.Second)
 //	if count > 100 { /* rate limited */ }
 func (r *CacheRef) IncrWithTTL(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
-	var out struct{ Value int64 `json:"value"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/incrttl/%s", url.PathEscape(r.name), key)
+	var out struct {
+		Value int64 `json:"value"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/%s/incrttl", url.PathEscape(r.name), key)
 	if err := r.client.do(ctx, "POST", path, map[string]interface{}{
 		"delta": delta, "ttl": int(ttl.Seconds()),
 	}, &out); err != nil {
@@ -210,8 +212,10 @@ func (r *CacheRef) SortedSet(name string) *SortedSetRef {
 
 // Add adds or updates members with scores. Returns the number of new members added.
 func (z *SortedSetRef) Add(ctx context.Context, entries ...SortedSetEntry) (int64, error) {
-	var out struct{ Added int64 `json:"added"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/add", url.PathEscape(z.cache.name), url.PathEscape(z.name))
+	var out struct {
+		Added int64 `json:"added"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zsets/%s/add", url.PathEscape(z.cache.name), url.PathEscape(z.name))
 	if err := z.cache.client.do(ctx, "POST", path, map[string]interface{}{"entries": entries}, &out); err != nil {
 		return 0, err
 	}
@@ -220,8 +224,10 @@ func (z *SortedSetRef) Add(ctx context.Context, entries ...SortedSetEntry) (int6
 
 // Score returns the score of a member.
 func (z *SortedSetRef) Score(ctx context.Context, member string) (float64, error) {
-	var out struct{ Score float64 `json:"score"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/score/%s",
+	var out struct {
+		Score float64 `json:"score"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zsets/%s/score/%s",
 		url.PathEscape(z.cache.name), url.PathEscape(z.name), url.PathEscape(member))
 	if err := z.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return 0, err
@@ -231,8 +237,10 @@ func (z *SortedSetRef) Score(ctx context.Context, member string) (float64, error
 
 // Rank returns the 0-based rank of a member (lowest score = rank 0).
 func (z *SortedSetRef) Rank(ctx context.Context, member string) (int64, error) {
-	var out struct{ Rank int64 `json:"rank"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/rank/%s",
+	var out struct {
+		Rank int64 `json:"rank"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zsets/%s/rank/%s",
 		url.PathEscape(z.cache.name), url.PathEscape(z.name), url.PathEscape(member))
 	if err := z.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return -1, err
@@ -242,8 +250,10 @@ func (z *SortedSetRef) Rank(ctx context.Context, member string) (int64, error) {
 
 // Range returns members by rank range (inclusive, 0-based, negative from end).
 func (z *SortedSetRef) Range(ctx context.Context, start, stop int) ([]SortedSetEntry, error) {
-	var out struct{ Entries []SortedSetEntry `json:"entries"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s?start=%d&stop=%d",
+	var out struct {
+		Entries []SortedSetEntry `json:"entries"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zsets/%s?start=%d&stop=%d",
 		url.PathEscape(z.cache.name), url.PathEscape(z.name), start, stop)
 	if err := z.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return nil, err
@@ -253,8 +263,10 @@ func (z *SortedSetRef) Range(ctx context.Context, start, stop int) ([]SortedSetE
 
 // RangeByScore returns members with scores between min and max (inclusive).
 func (z *SortedSetRef) RangeByScore(ctx context.Context, min, max float64) ([]SortedSetEntry, error) {
-	var out struct{ Entries []SortedSetEntry `json:"entries"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/byscore?min=%f&max=%f",
+	var out struct {
+		Entries []SortedSetEntry `json:"entries"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zsets/%s/byscore?min=%f&max=%f",
 		url.PathEscape(z.cache.name), url.PathEscape(z.name), min, max)
 	if err := z.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return nil, err
@@ -264,8 +276,10 @@ func (z *SortedSetRef) RangeByScore(ctx context.Context, min, max float64) ([]So
 
 // Rem removes members. Returns the number removed.
 func (z *SortedSetRef) Rem(ctx context.Context, members ...string) (int64, error) {
-	var out struct{ Removed int64 `json:"removed"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/rem", url.PathEscape(z.cache.name), url.PathEscape(z.name))
+	var out struct {
+		Removed int64 `json:"removed"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zsets/%s/rem", url.PathEscape(z.cache.name), url.PathEscape(z.name))
 	if err := z.cache.client.do(ctx, "POST", path, map[string]interface{}{"members": members}, &out); err != nil {
 		return 0, err
 	}
@@ -274,8 +288,10 @@ func (z *SortedSetRef) Rem(ctx context.Context, members ...string) (int64, error
 
 // IncrBy increments a member's score by delta. Creates with delta as score if new.
 func (z *SortedSetRef) IncrBy(ctx context.Context, member string, delta float64) (float64, error) {
-	var out struct{ Score float64 `json:"score"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s/incrby", url.PathEscape(z.cache.name), url.PathEscape(z.name))
+	var out struct {
+		Score float64 `json:"score"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zsets/%s/incrby", url.PathEscape(z.cache.name), url.PathEscape(z.name))
 	if err := z.cache.client.do(ctx, "POST", path, map[string]interface{}{"member": member, "delta": delta}, &out); err != nil {
 		return 0, err
 	}
@@ -284,7 +300,7 @@ func (z *SortedSetRef) IncrBy(ctx context.Context, member string, delta float64)
 
 // Del deletes the entire sorted set.
 func (z *SortedSetRef) Del(ctx context.Context) error {
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/zset/%s", url.PathEscape(z.cache.name), url.PathEscape(z.name))
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/zsets/%s", url.PathEscape(z.cache.name), url.PathEscape(z.name))
 	return z.cache.client.do(ctx, "DELETE", path, nil, nil)
 }
 
@@ -348,7 +364,9 @@ func (r *CacheRef) PubSub(channel string, opts PubSubOpts) *PubSubRef {
 // Publish appends a message to the channel. Returns the sequence number.
 // Bounded channels auto-trim by count (MaxSize) and/or age (MaxAge).
 func (p *PubSubRef) Publish(ctx context.Context, value string) (int64, error) {
-	var out struct{ Seq int64 `json:"seq"` }
+	var out struct {
+		Seq int64 `json:"seq"`
+	}
 	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/publish",
 		url.PathEscape(p.cache.name), url.PathEscape(p.channel))
 	body := map[string]interface{}{"value": value}
@@ -368,7 +386,9 @@ func (p *PubSubRef) Publish(ctx context.Context, value string) (int64, error) {
 // Each consumer tracks its own cursor independently (broadcast pattern).
 // Automatically resumes from where it left off after reconnect.
 func (p *PubSubRef) Read(ctx context.Context, consumerID string, count int) ([]PubSubMessage, error) {
-	var out struct{ Messages []PubSubMessage `json:"messages"` }
+	var out struct {
+		Messages []PubSubMessage `json:"messages"`
+	}
 	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/read?consumer=%s&count=%d",
 		url.PathEscape(p.cache.name), url.PathEscape(p.channel),
 		url.QueryEscape(consumerID), count)
@@ -390,7 +410,9 @@ func (p *PubSubRef) CreateGroup(ctx context.Context, groupName string) error {
 // (round-robin). The message is marked pending until Ack is called.
 // Returns nil if no messages are available.
 func (p *PubSubRef) Claim(ctx context.Context, groupName, consumerID string) (*PubSubMessage, error) {
-	var out struct{ Message *PubSubMessage `json:"message"` }
+	var out struct {
+		Message *PubSubMessage `json:"message"`
+	}
 	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/group/%s/claim?consumer=%s",
 		url.PathEscape(p.cache.name), url.PathEscape(p.channel),
 		url.PathEscape(groupName), url.QueryEscape(consumerID))
@@ -411,7 +433,9 @@ func (p *PubSubRef) Ack(ctx context.Context, groupName string, seq int64) error 
 // Reclaim returns messages that have been pending longer than timeout
 // without being acked. Re-assigns them to the given consumer.
 func (p *PubSubRef) Reclaim(ctx context.Context, groupName, consumerID string, timeout time.Duration) ([]PubSubMessage, error) {
-	var out struct{ Messages []PubSubMessage `json:"messages"` }
+	var out struct {
+		Messages []PubSubMessage `json:"messages"`
+	}
 	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/group/%s/reclaim?consumer=%s&timeout=%d",
 		url.PathEscape(p.cache.name), url.PathEscape(p.channel),
 		url.PathEscape(groupName), url.QueryEscape(consumerID), int(timeout.Seconds()))
@@ -423,7 +447,9 @@ func (p *PubSubRef) Reclaim(ctx context.Context, groupName, consumerID string, t
 
 // Trim removes messages by age or size.
 func (p *PubSubRef) Trim(ctx context.Context, maxAge time.Duration) (int64, error) {
-	var out struct{ Removed int64 `json:"removed"` }
+	var out struct {
+		Removed int64 `json:"removed"`
+	}
 	path := fmt.Sprintf("/apps/cache/api/caches/%s/pubsub/%s/trim",
 		url.PathEscape(p.cache.name), url.PathEscape(p.channel))
 	if err := p.cache.client.do(ctx, "POST", path, map[string]int{"max_age": int(maxAge.Seconds())}, &out); err != nil {
@@ -454,8 +480,10 @@ func (r *CacheRef) List(name string) *ListRef {
 
 // LPush prepends values to the head of the list. Returns the new length.
 func (l *ListRef) LPush(ctx context.Context, values ...string) (int64, error) {
-	var out struct{ Length int64 `json:"length"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s/lpush", url.PathEscape(l.cache.name), url.PathEscape(l.name))
+	var out struct {
+		Length int64 `json:"length"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/lists/%s/lpush", url.PathEscape(l.cache.name), url.PathEscape(l.name))
 	if err := l.cache.client.do(ctx, "POST", path, map[string]interface{}{"values": values}, &out); err != nil {
 		return 0, err
 	}
@@ -464,8 +492,10 @@ func (l *ListRef) LPush(ctx context.Context, values ...string) (int64, error) {
 
 // RPush appends values to the tail of the list. Returns the new length.
 func (l *ListRef) RPush(ctx context.Context, values ...string) (int64, error) {
-	var out struct{ Length int64 `json:"length"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s/rpush", url.PathEscape(l.cache.name), url.PathEscape(l.name))
+	var out struct {
+		Length int64 `json:"length"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/lists/%s/rpush", url.PathEscape(l.cache.name), url.PathEscape(l.name))
 	if err := l.cache.client.do(ctx, "POST", path, map[string]interface{}{"values": values}, &out); err != nil {
 		return 0, err
 	}
@@ -474,8 +504,10 @@ func (l *ListRef) RPush(ctx context.Context, values ...string) (int64, error) {
 
 // LPop removes and returns the first element.
 func (l *ListRef) LPop(ctx context.Context) (string, error) {
-	var out struct{ Value string `json:"value"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s/lpop", url.PathEscape(l.cache.name), url.PathEscape(l.name))
+	var out struct {
+		Value string `json:"value"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/lists/%s/lpop", url.PathEscape(l.cache.name), url.PathEscape(l.name))
 	if err := l.cache.client.do(ctx, "POST", path, nil, &out); err != nil {
 		return "", err
 	}
@@ -484,8 +516,10 @@ func (l *ListRef) LPop(ctx context.Context) (string, error) {
 
 // RPop removes and returns the last element.
 func (l *ListRef) RPop(ctx context.Context) (string, error) {
-	var out struct{ Value string `json:"value"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s/rpop", url.PathEscape(l.cache.name), url.PathEscape(l.name))
+	var out struct {
+		Value string `json:"value"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/lists/%s/rpop", url.PathEscape(l.cache.name), url.PathEscape(l.name))
 	if err := l.cache.client.do(ctx, "POST", path, nil, &out); err != nil {
 		return "", err
 	}
@@ -494,8 +528,10 @@ func (l *ListRef) RPop(ctx context.Context) (string, error) {
 
 // Range returns elements from start to stop (inclusive, 0-based, negative indices from end).
 func (l *ListRef) Range(ctx context.Context, start, stop int) ([]string, error) {
-	var out struct{ Values []string `json:"values"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s?start=%d&stop=%d",
+	var out struct {
+		Values []string `json:"values"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/lists/%s?start=%d&stop=%d",
 		url.PathEscape(l.cache.name), url.PathEscape(l.name), start, stop)
 	if err := l.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return nil, err
@@ -505,8 +541,10 @@ func (l *ListRef) Range(ctx context.Context, start, stop int) ([]string, error) 
 
 // Len returns the length of the list.
 func (l *ListRef) Len(ctx context.Context) (int64, error) {
-	var out struct{ Length int64 `json:"length"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s?start=0&stop=-1",
+	var out struct {
+		Length int64 `json:"length"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/lists/%s?start=0&stop=-1",
 		url.PathEscape(l.cache.name), url.PathEscape(l.name))
 	if err := l.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return 0, err
@@ -516,7 +554,7 @@ func (l *ListRef) Len(ctx context.Context) (int64, error) {
 
 // Del deletes the entire list.
 func (l *ListRef) Del(ctx context.Context) error {
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/list/%s", url.PathEscape(l.cache.name), url.PathEscape(l.name))
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/lists/%s", url.PathEscape(l.cache.name), url.PathEscape(l.name))
 	return l.cache.client.do(ctx, "DELETE", path, nil, nil)
 }
 
@@ -535,8 +573,10 @@ func (r *CacheRef) SetStore(name string) *SetRef {
 
 // Add adds members to the set. Returns the number of new members added.
 func (s *SetRef) Add(ctx context.Context, members ...string) (int64, error) {
-	var out struct{ Added int64 `json:"added"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/set/%s/add", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	var out struct {
+		Added int64 `json:"added"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/sets/%s/add", url.PathEscape(s.cache.name), url.PathEscape(s.name))
 	if err := s.cache.client.do(ctx, "POST", path, map[string]interface{}{"members": members}, &out); err != nil {
 		return 0, err
 	}
@@ -545,8 +585,10 @@ func (s *SetRef) Add(ctx context.Context, members ...string) (int64, error) {
 
 // Rem removes members from the set. Returns the number removed.
 func (s *SetRef) Rem(ctx context.Context, members ...string) (int64, error) {
-	var out struct{ Removed int64 `json:"removed"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/set/%s/rem", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	var out struct {
+		Removed int64 `json:"removed"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/sets/%s/rem", url.PathEscape(s.cache.name), url.PathEscape(s.name))
 	if err := s.cache.client.do(ctx, "POST", path, map[string]interface{}{"members": members}, &out); err != nil {
 		return 0, err
 	}
@@ -555,8 +597,10 @@ func (s *SetRef) Rem(ctx context.Context, members ...string) (int64, error) {
 
 // Members returns all members of the set.
 func (s *SetRef) Members(ctx context.Context) ([]string, error) {
-	var out struct{ Members []string `json:"members"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/set/%s", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	var out struct {
+		Members []string `json:"members"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/sets/%s", url.PathEscape(s.cache.name), url.PathEscape(s.name))
 	if err := s.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return nil, err
 	}
@@ -565,7 +609,7 @@ func (s *SetRef) Members(ctx context.Context) ([]string, error) {
 
 // Del deletes the entire set.
 func (s *SetRef) Del(ctx context.Context) error {
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/set/%s", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/sets/%s", url.PathEscape(s.cache.name), url.PathEscape(s.name))
 	return s.cache.client.do(ctx, "DELETE", path, nil, nil)
 }
 
@@ -585,8 +629,10 @@ func (r *CacheRef) Queue(name string, maxSize int) *QueueRef {
 
 // Enqueue adds a value to the back of the queue.
 func (q *QueueRef) Enqueue(ctx context.Context, value string) (int64, error) {
-	var out struct{ Length int64 `json:"length"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/queue/%s/enqueue", url.PathEscape(q.cache.name), url.PathEscape(q.name))
+	var out struct {
+		Length int64 `json:"length"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/queues/%s/enqueue", url.PathEscape(q.cache.name), url.PathEscape(q.name))
 	if err := q.cache.client.do(ctx, "POST", path, map[string]interface{}{
 		"value": value, "max_size": q.maxSize,
 	}, &out); err != nil {
@@ -597,8 +643,10 @@ func (q *QueueRef) Enqueue(ctx context.Context, value string) (int64, error) {
 
 // Dequeue removes and returns the front element (oldest).
 func (q *QueueRef) Dequeue(ctx context.Context) (string, error) {
-	var out struct{ Value string `json:"value"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/queue/%s/dequeue", url.PathEscape(q.cache.name), url.PathEscape(q.name))
+	var out struct {
+		Value string `json:"value"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/queues/%s/dequeue", url.PathEscape(q.cache.name), url.PathEscape(q.name))
 	if err := q.cache.client.do(ctx, "POST", path, nil, &out); err != nil {
 		return "", err
 	}
@@ -607,8 +655,10 @@ func (q *QueueRef) Dequeue(ctx context.Context) (string, error) {
 
 // Peek returns the front element without removing it.
 func (q *QueueRef) Peek(ctx context.Context) (string, error) {
-	var out struct{ Value string `json:"value"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/queue/%s", url.PathEscape(q.cache.name), url.PathEscape(q.name))
+	var out struct {
+		Value string `json:"value"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/queues/%s", url.PathEscape(q.cache.name), url.PathEscape(q.name))
 	if err := q.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return "", err
 	}
@@ -631,8 +681,10 @@ func (r *CacheRef) Stack(name string, maxSize int) *StackRef {
 
 // Push adds a value to the top of the stack.
 func (s *StackRef) Push(ctx context.Context, value string) (int64, error) {
-	var out struct{ Length int64 `json:"length"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/stack/%s/push", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	var out struct {
+		Length int64 `json:"length"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/stacks/%s/push", url.PathEscape(s.cache.name), url.PathEscape(s.name))
 	if err := s.cache.client.do(ctx, "POST", path, map[string]interface{}{
 		"value": value, "max_size": s.maxSize,
 	}, &out); err != nil {
@@ -643,8 +695,10 @@ func (s *StackRef) Push(ctx context.Context, value string) (int64, error) {
 
 // Pop removes and returns the top element (newest).
 func (s *StackRef) Pop(ctx context.Context) (string, error) {
-	var out struct{ Value string `json:"value"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/stack/%s/pop", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	var out struct {
+		Value string `json:"value"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/stacks/%s/pop", url.PathEscape(s.cache.name), url.PathEscape(s.name))
 	if err := s.cache.client.do(ctx, "POST", path, nil, &out); err != nil {
 		return "", err
 	}
@@ -653,8 +707,10 @@ func (s *StackRef) Pop(ctx context.Context) (string, error) {
 
 // Peek returns the top element without removing it.
 func (s *StackRef) Peek(ctx context.Context) (string, error) {
-	var out struct{ Value string `json:"value"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/stack/%s", url.PathEscape(s.cache.name), url.PathEscape(s.name))
+	var out struct {
+		Value string `json:"value"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/stacks/%s", url.PathEscape(s.cache.name), url.PathEscape(s.name))
 	if err := s.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return "", err
 	}
@@ -681,14 +737,16 @@ func (r *CacheRef) Hash(name string) *HashRef {
 
 // Set sets one or more field-value pairs. Upserts existing fields.
 func (h *HashRef) Set(ctx context.Context, fields map[string]string) error {
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s", url.PathEscape(h.cache.name), url.PathEscape(h.name))
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hashes/%s", url.PathEscape(h.cache.name), url.PathEscape(h.name))
 	return h.cache.client.do(ctx, "PUT", path, map[string]interface{}{"fields": fields}, nil)
 }
 
 // Get returns the value of a single field.
 func (h *HashRef) Get(ctx context.Context, field string) (string, error) {
-	var out struct{ Value string `json:"value"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s/field/%s",
+	var out struct {
+		Value string `json:"value"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hashes/%s/fields/%s",
 		url.PathEscape(h.cache.name), url.PathEscape(h.name), url.PathEscape(field))
 	if err := h.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return "", err
@@ -698,8 +756,10 @@ func (h *HashRef) Get(ctx context.Context, field string) (string, error) {
 
 // GetAll returns all field-value pairs.
 func (h *HashRef) GetAll(ctx context.Context) (map[string]string, error) {
-	var out struct{ Fields map[string]string `json:"fields"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s", url.PathEscape(h.cache.name), url.PathEscape(h.name))
+	var out struct {
+		Fields map[string]string `json:"fields"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hashes/%s", url.PathEscape(h.cache.name), url.PathEscape(h.name))
 	if err := h.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return nil, err
 	}
@@ -709,7 +769,7 @@ func (h *HashRef) GetAll(ctx context.Context) (map[string]string, error) {
 // Del removes one or more fields from the hash.
 func (h *HashRef) Del(ctx context.Context, fields ...string) error {
 	for _, field := range fields {
-		path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s/field/%s",
+		path := fmt.Sprintf("/apps/cache/api/caches/%s/hashes/%s/fields/%s",
 			url.PathEscape(h.cache.name), url.PathEscape(h.name), url.PathEscape(field))
 		if err := h.cache.client.do(ctx, "DELETE", path, nil, nil); err != nil {
 			return err
@@ -720,14 +780,16 @@ func (h *HashRef) Del(ctx context.Context, fields ...string) error {
 
 // DelAll deletes the entire hash.
 func (h *HashRef) DelAll(ctx context.Context) error {
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s", url.PathEscape(h.cache.name), url.PathEscape(h.name))
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hashes/%s", url.PathEscape(h.cache.name), url.PathEscape(h.name))
 	return h.cache.client.do(ctx, "DELETE", path, nil, nil)
 }
 
 // ToJSON returns the hash as a JSON string.
 func (h *HashRef) ToJSON(ctx context.Context) (string, error) {
-	var out struct{ JSON string `json:"json"` }
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s/json", url.PathEscape(h.cache.name), url.PathEscape(h.name))
+	var out struct {
+		JSON string `json:"json"`
+	}
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hashes/%s/json", url.PathEscape(h.cache.name), url.PathEscape(h.name))
 	if err := h.cache.client.do(ctx, "GET", path, nil, &out); err != nil {
 		return "", err
 	}
@@ -736,7 +798,7 @@ func (h *HashRef) ToJSON(ctx context.Context) (string, error) {
 
 // FromJSON sets hash fields from a JSON object string.
 func (h *HashRef) FromJSON(ctx context.Context, jsonStr string) error {
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/hash/%s/json", url.PathEscape(h.cache.name), url.PathEscape(h.name))
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/hashes/%s/json", url.PathEscape(h.cache.name), url.PathEscape(h.name))
 	return h.cache.client.do(ctx, "PUT", path, map[string]string{"json": jsonStr}, nil)
 }
 
@@ -756,8 +818,8 @@ type CacheStats struct {
 
 // CacheInfo describes a named cache instance.
 type CacheInfo struct {
-	Name     string `json:"name"`
-	KeyCount int64  `json:"key_count"`
+	Name     string  `json:"name"`
+	KeyCount int64   `json:"key_count"`
 	HitRate  float64 `json:"hit_rate"`
 }
 
