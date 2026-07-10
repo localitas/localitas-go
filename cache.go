@@ -68,7 +68,7 @@ func (r *CacheRef) IncrBy(ctx context.Context, key string, delta int64) (int64, 
 	var out struct {
 		Value int64 `json:"value"`
 	}
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/%s/incr", url.PathEscape(r.name), key)
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/incr/%s", url.PathEscape(r.name), key)
 	if err := r.client.do(ctx, "POST", path, map[string]interface{}{"delta": delta}, &out); err != nil {
 		return 0, err
 	}
@@ -126,7 +126,7 @@ func (r *CacheRef) TTL(ctx context.Context, key string) (time.Duration, error) {
 // Expire sets or updates the TTL on an existing key. Returns an error
 // if the key doesn't exist.
 func (r *CacheRef) Expire(ctx context.Context, key string, ttl time.Duration) error {
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/%s/expire", url.PathEscape(r.name), key)
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/expire/%s", url.PathEscape(r.name), key)
 	return r.client.do(ctx, "POST", path, map[string]interface{}{
 		"ttl": int(ttl.Seconds()),
 	}, nil)
@@ -142,7 +142,7 @@ func (r *CacheRef) SetNX(ctx context.Context, key, value string, ttl time.Durati
 	var out struct {
 		Acquired bool `json:"acquired"`
 	}
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/%s/setnx", url.PathEscape(r.name), key)
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/setnx/%s", url.PathEscape(r.name), key)
 	if err := r.client.do(ctx, "POST", path, map[string]interface{}{
 		"value": value, "ttl": int(ttl.Seconds()),
 	}, &out); err != nil {
@@ -158,7 +158,7 @@ func (r *CacheRef) GetSet(ctx context.Context, key, value string, ttl time.Durat
 		OldValue string `json:"old_value"`
 		HadOld   bool   `json:"had_old"`
 	}
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/%s/getset", url.PathEscape(r.name), key)
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/getset/%s", url.PathEscape(r.name), key)
 	if err := r.client.do(ctx, "POST", path, map[string]interface{}{
 		"value": value, "ttl": int(ttl.Seconds()),
 	}, &out); err != nil {
@@ -176,7 +176,7 @@ func (r *CacheRef) IncrWithTTL(ctx context.Context, key string, delta int64, ttl
 	var out struct {
 		Value int64 `json:"value"`
 	}
-	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/%s/incrttl", url.PathEscape(r.name), key)
+	path := fmt.Sprintf("/apps/cache/api/caches/%s/keys/incrttl/%s", url.PathEscape(r.name), key)
 	if err := r.client.do(ctx, "POST", path, map[string]interface{}{
 		"delta": delta, "ttl": int(ttl.Seconds()),
 	}, &out); err != nil {
