@@ -11,7 +11,7 @@ const AutomationRunIDHeader = "Localitas-Automation-Run-ID"
 
 type AsyncWorkFunc func(ctx context.Context) (map[string]interface{}, error)
 
-func RunAsync(w http.ResponseWriter, r *http.Request, c *Client, work AsyncWorkFunc) bool {
+func (c *Client) RunAsync(w http.ResponseWriter, r *http.Request, work AsyncWorkFunc) bool {
 	runID := r.Header.Get(AutomationRunIDHeader)
 	if runID == "" {
 		return false
@@ -34,9 +34,7 @@ func RunAsync(w http.ResponseWriter, r *http.Request, c *Client, work AsyncWorkF
 			errMsg = err.Error()
 		}
 
-		if c != nil {
-			c.Automation().PublishResult(context.Background(), runID, status, result, errMsg)
-		}
+		c.Automation().PublishResult(context.Background(), runID, status, result, errMsg)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
