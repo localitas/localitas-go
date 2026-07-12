@@ -1,9 +1,9 @@
 module github.com/localitas/localitas-go
 
-go 1.26.3
+go 1.26.5
 
 require (
-	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/mattn/go-sqlite3 v1.14.47 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
+	github.com/gorilla/websocket v1.5.3
+	github.com/mattn/go-sqlite3 v1.14.47
+	gopkg.in/yaml.v3 v3.0.1
 )
