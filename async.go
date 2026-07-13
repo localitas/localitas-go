@@ -12,6 +12,9 @@ const AutomationRunIDHeader = "Localitas-Automation-Run-ID"
 type AsyncWorkFunc func(ctx context.Context) (map[string]interface{}, error)
 
 func (c *Client) RunAsync(w http.ResponseWriter, r *http.Request, work AsyncWorkFunc) bool {
+	if c == nil {
+		return false
+	}
 	runID := r.Header.Get(AutomationRunIDHeader)
 	if runID == "" {
 		return false

@@ -746,6 +746,9 @@ func (c *Client) Do(ctx context.Context, method, path string, body any, out any)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	if c == nil {
+		return fmt.Errorf("localitas client is nil: %s %s", method, path)
+	}
 	var reqBody io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
