@@ -27,6 +27,65 @@ type AutomationRun struct {
 	Result       map[string]interface{} `json:"result,omitempty"`
 }
 
+type Automation struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	TriggerType string `json:"trigger_type,omitempty"`
+	IsEnabled   bool   `json:"is_enabled,omitempty"`
+}
+
+type DAGNode struct {
+	NodeID            string         `json:"node_id"`
+	NodeType          string         `json:"node_type"`
+	ExecutionStrategy string         `json:"execution_strategy"`
+	Metadata          map[string]any `json:"metadata"`
+}
+
+type DAGConfig struct {
+	DAGID       string    `json:"dag_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Nodes       []DAGNode `json:"nodes"`
+}
+
+type PeriodicTrigger struct {
+	Schedule   string `json:"schedule"`
+	Timezone   string `json:"timezone"`
+	MaxRetries int    `json:"max_retries"`
+}
+
+type TriggerConfig struct {
+	Periodic *PeriodicTrigger `json:"periodic,omitempty"`
+}
+
+type CreateAutomationRequest struct {
+	Name          string        `json:"name"`
+	Description   string        `json:"description"`
+	DAGConfig     DAGConfig     `json:"dag_config"`
+	TriggerType   string        `json:"trigger_type"`
+	TriggerConfig TriggerConfig `json:"trigger_config"`
+	IsEnabled     bool          `json:"is_enabled"`
+}
+
+func (a *AutomationClient) List(ctx context.Context) ([]Automation, error) {
+	var resp struct {
+		Automations []Automation `json:"automations"`
+	}
+	if err := a.client.do(ctx, "GET", "/apps/automation/api/automations", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Automations, nil
+}
+
+func (a *AutomationClient) Create(ctx context.Context, req CreateAutomationRequest) (*Automation, error) {
+	var out Automation
+	if err := a.client.do(ctx, "POST", "/apps/automation/api/automations", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (a *AutomationClient) Trigger(ctx context.Context, automationID string) (*AutomationRun, error) {
 	var run AutomationRun
 	err := a.client.do(ctx, "POST", fmt.Sprintf("/apps/automation/api/automations/%s/trigger", automationID), nil, &run)
