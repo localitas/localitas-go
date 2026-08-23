@@ -71,10 +71,10 @@ func setupCacheServer(t *testing.T) (*httptest.Server, *Client) {
 	mux.HandleFunc("GET /apps/cache/api/caches/{name}/stats", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(CacheStats{Name: "test", Hits: 10, Misses: 2, KeyCount: 5, HitRate: 83.3})
 	})
-	mux.HandleFunc("POST /apps/cache/api/caches/{name}/incr/{key...}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /apps/cache/api/caches/{name}/keys/incr/{key...}", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{"key": r.PathValue("key"), "value": 1})
 	})
-	mux.HandleFunc("POST /apps/cache/api/caches/{name}/expire/{key...}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /apps/cache/api/caches/{name}/keys/expire/{key...}", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
