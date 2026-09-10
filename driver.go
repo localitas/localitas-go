@@ -25,6 +25,25 @@ func init() {
 
 type localitasDriver struct{}
 
+// clientCache holds one *Client per (baseURL, token). sql.DB opens a new
+// driver.Conn per pooled connection; without this each would build its own
+// *Client. Sharing one client per endpoint keeps a single pooled http transport
+// and avoids re-creating the client on every connection.
+var clientCache sync.Map // key "baseURL\x00token" -> *Client
+
+func sharedClient(baseURL, token string) *Client {
+	key := baseURL + "\x00" + token
+	if v, ok := clientCache.Load(key); ok {
+		return v.(*Client)
+	}
+	c := New(baseURL)
+	if token != "" {
+		c = c.WithToken(token)
+	}
+	actual, _ := clientCache.LoadOrStore(key, c)
+	return actual.(*Client)
+}
+
 func (d *localitasDriver) Open(dsn string) (driver.Conn, error) {
 	u, err := url.Parse(dsn)
 	if err != nil {
@@ -39,12 +58,7 @@ func (d *localitasDriver) Open(dsn string) (driver.Conn, error) {
 		return nil, fmt.Errorf("database_id is required in DSN query params")
 	}
 
-	c := New(baseURL)
-	if token != "" {
-		c = c.WithToken(token)
-	}
-
-	return &localitasConn{client: c, dbID: dbID}, nil
+	return &localitasConn{client: sharedClient(baseURL, token), dbID: dbID}, nil
 }
 
 type localitasConn struct {
