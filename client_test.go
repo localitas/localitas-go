@@ -12,7 +12,15 @@ import (
 	"time"
 )
 
+func TestDefaultCoreURL_UsesCoreURLEnv(t *testing.T) {
+	t.Setenv("CORE_URL", "http://host.docker.internal:9090")
+	if u := DefaultCoreURL(); u != "http://host.docker.internal:9090" {
+		t.Fatalf("DefaultCoreURL = %s, want the CORE_URL core injected", u)
+	}
+}
+
 func TestDefaultCoreURL_ReturnsLocalhost(t *testing.T) {
+	t.Setenv("CORE_URL", "")
 	u := DefaultCoreURL()
 	if runtime.GOOS != "linux" {
 		if u != "http://localhost:"+DefaultCorePort {

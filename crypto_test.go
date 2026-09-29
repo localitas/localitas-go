@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"sync"
@@ -128,5 +129,56 @@ func TestEnvKeyStableAcrossInstances(t *testing.T) {
 	}
 	if got != "GOCSPX-secret-value" {
 		t.Errorf("cross-instance decrypt = %q, want the original secret", got)
+	}
+}
+
+func TestRequireSecretKey_AcceptsEnvKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("LOCALITAS_SECRET_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err := RequireSecretKey(); err != nil {
+		t.Fatalf("RequireSecretKey with a valid env key: %v", err)
+	}
+}
+
+func TestRequireSecretKey_AcceptsExistingKeyFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("LOCALITAS_SECRET_KEY", "")
+	if err := os.MkdirAll(filepath.Join(home, ".localitas"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".localitas", "secret.key"), make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireSecretKey(); err != nil {
+		t.Fatalf("RequireSecretKey with an existing key file: %v", err)
+	}
+}
+
+func TestDecryptWithKey_RoundTripsEncrypt(t *testing.T) {
+	keyB64 := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("LOCALITAS_SECRET_KEY", keyB64)
+	encryptionKey = nil
+	encryptionKeyOnce = sync.Once{}
+	t.Cleanup(func() {
+		encryptionKey = nil
+		encryptionKeyOnce = sync.Once{}
+	})
+
+	ciphertext, err := Encrypt("refresh-token-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := base64.StdEncoding.DecodeString(keyB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecryptWithKey(ciphertext, key)
+	if err != nil {
+		t.Fatalf("DecryptWithKey: %v", err)
+	}
+	if got != "refresh-token-value" {
+		t.Errorf("DecryptWithKey = %q, want the plaintext", got)
 	}
 }

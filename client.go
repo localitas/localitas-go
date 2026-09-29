@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -69,6 +70,12 @@ func readAPITokenFromConfig(path string) string {
 // Inside Docker containers it returns http://host.docker.internal:8090,
 // otherwise http://localhost:8090.
 func DefaultCoreURL() string {
+	// Core sets CORE_URL on every app container it launches, pointing at itself.
+	// It must win: several clusters can share one Docker host, and the
+	// port-based default would send every app to the 8090 cluster.
+	if u := os.Getenv("CORE_URL"); u != "" {
+		return u
+	}
 	if isContainer() {
 		return "http://host.docker.internal:" + DefaultCorePort
 	}
@@ -560,6 +567,52 @@ func (c *Client) ListAccessibleResources(ctx context.Context, app, resourceType 
 	return result.Resources, nil
 }
 
+// The ...AsUser methods let an app backend act for the user making a request.
+// App backends reach core with core's own system token, whose identity is not
+// that user, so the user is passed explicitly. They require an admin-scoped
+// token.
+
+// ListAccessibleResourcesAsUser is ListAccessibleResources for userID.
+func (c *Client) ListAccessibleResourcesAsUser(ctx context.Context, userID, app, resourceType string) ([]ResourcePermission, error) {
+	var result struct {
+		Resources []ResourcePermission `json:"resources"`
+	}
+	path := fmt.Sprintf("/api/permissions/users/%s/accessible?app=%s&resource_type=%s",
+		url.PathEscape(userID), url.QueryEscape(app), url.QueryEscape(resourceType))
+	if err := c.do(ctx, "GET", path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result.Resources, nil
+}
+
+func asUserMembersPath(actingUserID, app, resourceType, resourceID string) string {
+	return fmt.Sprintf("/api/permissions/users/%s/resources/%s/%s/%s/members",
+		url.PathEscape(actingUserID), url.PathEscape(app), url.PathEscape(resourceType), url.PathEscape(resourceID))
+}
+
+// ListResourceMembersAsUser lists a resource's members; actingUserID must have
+// access to the resource.
+func (c *Client) ListResourceMembersAsUser(ctx context.Context, actingUserID, app, resourceType, resourceID string) ([]ResourceMember, error) {
+	var result struct {
+		Members []ResourceMember `json:"members"`
+	}
+	if err := c.do(ctx, "GET", asUserMembersPath(actingUserID, app, resourceType, resourceID), nil, &result); err != nil {
+		return nil, err
+	}
+	return result.Members, nil
+}
+
+// AddResourceMemberAsUser grants access; actingUserID must be admin on the resource.
+func (c *Client) AddResourceMemberAsUser(ctx context.Context, actingUserID, app, resourceType, resourceID string, member ResourceMember) error {
+	return c.do(ctx, "POST", asUserMembersPath(actingUserID, app, resourceType, resourceID), member, nil)
+}
+
+// RemoveResourceMemberAsUser revokes access; actingUserID must be admin on the resource.
+func (c *Client) RemoveResourceMemberAsUser(ctx context.Context, actingUserID, app, resourceType, resourceID, userID, groupID string) error {
+	return c.do(ctx, "DELETE", asUserMembersPath(actingUserID, app, resourceType, resourceID),
+		ResourceMember{UserID: userID, GroupID: groupID}, nil)
+}
+
 // GetUserGroupIDs returns all group IDs that a user belongs to.
 func (c *Client) GetUserGroupIDs(ctx context.Context, userID string) ([]string, error) {
 	var result struct {
@@ -612,8 +665,10 @@ func (c *Client) ListGroups(ctx context.Context) ([]UserGroup, error) {
 
 // VaultCredentialSummary is a credential's metadata without its secret values.
 type VaultCredentialSummary struct {
-	PublicID string `json:"public_id"`
-	Name     string `json:"name"`
+	PublicID     string `json:"public_id"`
+	Name         string `json:"name"`
+	URL          string `json:"url,omitempty"`
+	KeychainSync bool   `json:"keychain_sync"`
 }
 
 // VaultListCredentials returns all credentials accessible to the authenticated user.
@@ -658,6 +713,96 @@ func (c *Client) VaultUpdateCredential(ctx context.Context, publicID, name, cred
 // VaultDeleteCredential deletes a credential by its public ID.
 func (c *Client) VaultDeleteCredential(ctx context.Context, publicID string) error {
 	return c.do(ctx, "DELETE", "/apps/vault/api/credentials/"+url.PathEscape(publicID), nil, nil)
+}
+
+// VaultGetCredential returns a credential's metadata (never its secrets).
+func (c *Client) VaultGetCredential(ctx context.Context, publicID string) (*VaultCredentialSummary, error) {
+	var out VaultCredentialSummary
+	if err := c.do(ctx, "GET", "/apps/vault/api/credentials/"+url.PathEscape(publicID), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// VaultRegenerateID gives a credential a new public ID (invalidating the old
+// one) and returns it. The secrets are unchanged.
+func (c *Client) VaultRegenerateID(ctx context.Context, publicID string) (string, error) {
+	var out struct {
+		PublicID string `json:"public_id"`
+	}
+	if err := c.do(ctx, "POST", "/apps/vault/api/credentials/"+url.PathEscape(publicID)+"/regenerate-id", nil, &out); err != nil {
+		return "", err
+	}
+	return out.PublicID, nil
+}
+
+// VaultListMembers returns the users and groups a credential is shared with.
+func (c *Client) VaultListMembers(ctx context.Context, publicID string) ([]ResourceMember, error) {
+	var out struct {
+		Members []ResourceMember `json:"members"`
+	}
+	if err := c.do(ctx, "GET", "/apps/vault/api/credentials/"+url.PathEscape(publicID)+"/members", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Members, nil
+}
+
+// VaultAddMember shares a credential with a user or group.
+func (c *Client) VaultAddMember(ctx context.Context, publicID string, member ResourceMember) error {
+	return c.do(ctx, "POST", "/apps/vault/api/credentials/"+url.PathEscape(publicID)+"/members", member, nil)
+}
+
+// VaultRemoveMember stops sharing a credential with a user or group.
+func (c *Client) VaultRemoveMember(ctx context.Context, publicID, userID, groupID string) error {
+	return c.do(ctx, "DELETE", "/apps/vault/api/credentials/"+url.PathEscape(publicID)+"/members",
+		ResourceMember{UserID: userID, GroupID: groupID}, nil)
+}
+
+// VaultImportResult summarizes a 1Password import.
+type VaultImportResult struct {
+	Imported int `json:"imported"`
+	Skipped  int `json:"skipped"`
+	Total    int `json:"total"`
+}
+
+// VaultImport1Password imports a 1Password export (.1pux or .csv, chosen by
+// filename). Credentials that already exist (same name and URL) are skipped.
+func (c *Client) VaultImport1Password(ctx context.Context, filename string, data []byte) (*VaultImportResult, error) {
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := part.Write(data); err != nil {
+		return nil, err
+	}
+	if err := mw.Close(); err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/apps/vault/api/import/1password", &body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, &APIError{Method: "POST", Path: "/apps/vault/api/import/1password", StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(respBody))}
+	}
+	var out VaultImportResult
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("decode import result: %w (body=%s)", err, respBody)
+	}
+	return &out, nil
 }
 
 // CreateNotificationRequest is the payload for creating a notification.
