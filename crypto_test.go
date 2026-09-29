@@ -87,3 +87,46 @@ func resetKey(t *testing.T) {
 	})
 	_ = keyPath
 }
+
+// TestEnvKeyStableAcrossInstances proves that a provided LOCALITAS_SECRET_KEY
+// lets a "second instance" (fresh key state, no key file) decrypt ciphertext
+// produced by the first — the cross-restart / cross-container guarantee that
+// app containers rely on (they persist encrypted data in shared Raft state).
+func TestEnvKeyStableAcrossInstances(t *testing.T) {
+	// A fixed 32-byte key, base64-encoded, shared by both instances.
+	keyB64 := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" // 32 bytes
+	origHome := os.Getenv("HOME")
+	origKey := os.Getenv("LOCALITAS_SECRET_KEY")
+	t.Cleanup(func() {
+		os.Setenv("HOME", origHome)
+		if origKey == "" {
+			os.Unsetenv("LOCALITAS_SECRET_KEY")
+		} else {
+			os.Setenv("LOCALITAS_SECRET_KEY", origKey)
+		}
+		encryptionKey = nil
+		encryptionKeyOnce = sync.Once{}
+	})
+
+	// Instance 1: HOME with no key file, but env key set → encrypt.
+	os.Setenv("HOME", t.TempDir())
+	os.Setenv("LOCALITAS_SECRET_KEY", keyB64)
+	encryptionKey = nil
+	encryptionKeyOnce = sync.Once{}
+	ciphertext, err := Encrypt("GOCSPX-secret-value")
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+
+	// Instance 2: DIFFERENT HOME (so the file path can't help), same env key.
+	os.Setenv("HOME", t.TempDir())
+	encryptionKey = nil
+	encryptionKeyOnce = sync.Once{}
+	got, err := Decrypt(ciphertext)
+	if err != nil {
+		t.Fatalf("decrypt on second instance: %v", err)
+	}
+	if got != "GOCSPX-secret-value" {
+		t.Errorf("cross-instance decrypt = %q, want the original secret", got)
+	}
+}
