@@ -80,6 +80,33 @@ func getOrCreateKey() ([]byte, error) {
 	return encryptionKey, nil
 }
 
+// RequireSecretKey reports whether an encryption key is available WITHOUT
+// generating one: a valid LOCALITAS_SECRET_KEY, or an existing 32-byte
+// ~/.localitas/secret.key. Apps call it at startup so a missing key stops the
+// server immediately, instead of surfacing on the first write — or, with a
+// writable home directory, silently minting a key that is lost on restart.
+func RequireSecretKey() error {
+	if decodeKeyEnv() != nil {
+		return nil
+	}
+	if os.Getenv("LOCALITAS_SECRET_KEY") != "" {
+		return fmt.Errorf("LOCALITAS_SECRET_KEY is set but is not a 32-byte key (raw, base64, or hex)")
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("no LOCALITAS_SECRET_KEY and no home directory: %w", err)
+	}
+	keyPath := filepath.Join(homeDir, ".localitas", "secret.key")
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		return fmt.Errorf("no encryption key: LOCALITAS_SECRET_KEY is unset and %s is unreadable: %w", keyPath, err)
+	}
+	if len(data) != 32 {
+		return fmt.Errorf("encryption key %s has %d bytes, want 32", keyPath, len(data))
+	}
+	return nil
+}
+
 // Encrypt encrypts a plaintext string using AES-256-GCM with a key stored
 // at ~/.localitas/secret.key. The key is auto-generated on first use.
 // Returns a string prefixed with "enc:" followed by base64-encoded ciphertext.
@@ -128,6 +155,16 @@ func Decrypt(encoded string) (string, error) {
 	key, err := getOrCreateKey()
 	if err != nil {
 		return "", err
+	}
+	return DecryptWithKey(encoded, key)
+}
+
+// DecryptWithKey decrypts a value produced by Encrypt using an explicit
+// 32-byte key, e.g. a specific app's derived key. Values without the "enc:"
+// prefix are returned as-is, like Decrypt.
+func DecryptWithKey(encoded string, key []byte) (string, error) {
+	if len(encoded) < 4 || encoded[:4] != "enc:" {
+		return encoded, nil
 	}
 
 	ciphertext, err := base64.StdEncoding.DecodeString(encoded[4:])
