@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -17,9 +18,37 @@ var (
 	encryptionKeyOnce sync.Once
 )
 
+// decodeKeyEnv parses a 32-byte key from LOCALITAS_SECRET_KEY, accepting raw
+// 32-byte, base64, or hex encodings. Returns nil if unset/invalid.
+func decodeKeyEnv() []byte {
+	v := os.Getenv("LOCALITAS_SECRET_KEY")
+	if v == "" {
+		return nil
+	}
+	if len(v) == 32 {
+		return []byte(v)
+	}
+	if b, err := base64.StdEncoding.DecodeString(v); err == nil && len(b) == 32 {
+		return b
+	}
+	if b, err := hex.DecodeString(v); err == nil && len(b) == 32 {
+		return b
+	}
+	return nil
+}
+
 func getOrCreateKey() ([]byte, error) {
 	var err error
 	encryptionKeyOnce.Do(func() {
+		// Prefer an explicitly provided key. This is REQUIRED for app containers:
+		// they persist encrypted data in shared/durable Raft state, so they must
+		// use the SAME stable key core uses — not an ephemeral per-container key
+		// (which is unrecoverable after any restart). Env wins over the file.
+		if k := decodeKeyEnv(); k != nil {
+			encryptionKey = k
+			return
+		}
+
 		homeDir, _ := os.UserHomeDir()
 		keyPath := filepath.Join(homeDir, ".localitas", "secret.key")
 
