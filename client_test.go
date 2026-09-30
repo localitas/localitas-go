@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -258,5 +259,23 @@ func TestIngestDogStatsD(t *testing.T) {
 	}
 	if accepted != 2 {
 		t.Errorf("expected 2 accepted, got %d", accepted)
+	}
+}
+
+func TestDownload_StreamsBodyWithAuthorization(t *testing.T) {
+	payload := bytes.Repeat([]byte{0, 1, 2, 255}, 1<<16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok" || r.URL.Path != "/files/db" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Write(payload)
+	}))
+	defer srv.Close()
+
+	var got bytes.Buffer
+	n, err := New(srv.URL).WithToken("tok").Download(context.Background(), "/files/db", &got)
+	if err != nil || n != int64(len(payload)) || !bytes.Equal(got.Bytes(), payload) {
+		t.Fatalf("Download = %d bytes, %v; want %d identical bytes", n, err, len(payload))
 	}
 }
