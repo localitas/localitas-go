@@ -347,25 +347,6 @@ func (c *Client) SearchFTS(ctx context.Context, query string, opts SearchOptions
 	return &out, nil
 }
 
-// SearchHybrid runs hybrid search combining full-text and vector similarity (RRF-merged).
-// Falls back to FTS when no embedder is configured on the server.
-// The search mode is reported in SearchResponse.Mode.
-func (c *Client) SearchHybrid(ctx context.Context, query string, opts SearchOptions) (*SearchResponse, error) {
-	var out SearchResponse
-	limit := opts.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-	body := map[string]any{"q": query, "limit": limit}
-	if opts.DatabaseID != "" {
-		body["database_id"] = opts.DatabaseID
-	}
-	if err := c.do(ctx, "POST", "/apps/data/api/search/hybrid", body, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 // ----- Service Registry ------------------------------------------------------
 
 const serviceRegistryDB = "service_registry"
