@@ -76,9 +76,9 @@ type SearchIndexEntry struct {
 	UpdatedAt  int64  `json:"updated_at"`
 }
 
-// SearchResponse is the result of a SearchFTS or SearchHybrid call.
+// SearchResponse is the result of a SearchFTS call.
 type SearchResponse struct {
-	// Mode indicates how the search was executed: "fts", "hybrid", or "vector".
+	// Mode indicates how the search was executed ("fts").
 	Mode    string             `json:"mode"`
 	Results []SearchIndexEntry `json:"results"`
 }
