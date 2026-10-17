@@ -771,6 +771,7 @@ func (c *Client) VaultRemoveMember(ctx context.Context, publicID, userID, groupI
 type VaultImportResult struct {
 	Imported int `json:"imported"`
 	Skipped  int `json:"skipped"`
+	Failed   int `json:"failed"`
 	Total    int `json:"total"`
 }
 
