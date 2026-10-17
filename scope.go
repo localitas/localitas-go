@@ -87,7 +87,7 @@ func AuthMiddleware(next http.Handler) http.Handler {
 			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 			return
 		}
-		if claims.Email == "" && claims.UserID == "" {
+		if claims.UserID == "" {
 			http.Error(w, `{"error":"invalid token: no user identity"}`, http.StatusUnauthorized)
 			return
 		}

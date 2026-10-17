@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 )
@@ -123,5 +124,29 @@ func TestParseBearerToken_VerifiesCoreSignedToken(t *testing.T) {
 	}
 	if got.UserID != "u1" || got.Email != "alice@test.local" || got.Name != "Alice" || got.Permission != "write" {
 		t.Fatalf("claims = %+v", got)
+	}
+}
+
+func TestRequireSystem_AdmitsOnlyCoresToken(t *testing.T) {
+	t.Setenv("LOCALITAS_API_TOKEN", testAPIToken)
+	h := RequireSystem(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	for _, tc := range []struct {
+		name, auth string
+		want       int
+	}{
+		{"core's token", "Bearer " + testAPIToken, http.StatusOK},
+		{"a user's identity", "Bearer " + signTestToken(testAPIToken, TokenInfo{UserID: "alice", Permission: "admin"}), http.StatusForbidden},
+		{"another token", "Bearer lt_someone_else", http.StatusForbidden},
+		{"none", "", http.StatusForbidden},
+	} {
+		req, _ := http.NewRequest("POST", "/api/sync-all", nil)
+		if tc.auth != "" {
+			req.Header.Set("Authorization", tc.auth)
+		}
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("%s: got %d, want %d", tc.name, rec.Code, tc.want)
+		}
 	}
 }

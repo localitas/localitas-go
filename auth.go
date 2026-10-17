@@ -53,6 +53,37 @@ func deriveIdentityKey(apiToken string) []byte {
 	return []byte(base64.StdEncoding.EncodeToString(sum[:]))
 }
 
+// systemToken is the API token core gave the app; core's automation calls
+// the app's cron and event routes with it.
+func systemToken() string {
+	if t := os.Getenv("LOCALITAS_API_TOKEN"); t != "" {
+		return t
+	}
+	return DefaultToken()
+}
+
+// IsSystemRequest reports whether r carries the API token core gave the app,
+// i.e. comes from core itself (scheduled jobs, event deliveries) rather than
+// from a user.
+func IsSystemRequest(r *http.Request) bool {
+	want := systemToken()
+	got := TokenFromRequest(r)
+	return want != "" && got != "" && hmac.Equal([]byte(got), []byte(want))
+}
+
+// RequireSystem admits only requests from core itself (see
+// IsSystemRequest): routes that act across every user's data, like the
+// app's cron jobs, must not be callable by a user.
+func RequireSystem(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !IsSystemRequest(r) {
+			http.Error(w, `{"error":"only core may call this route"}`, http.StatusForbidden)
+			return
+		}
+		handler(w, r)
+	}
+}
+
 func currentIdentityKey() []byte {
 	identityKeyMu.RLock()
 	key, derived := identityKey, identityKeyDerived

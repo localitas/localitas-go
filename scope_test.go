@@ -124,7 +124,7 @@ func TestAuthMiddleware_RejectsTokenWithoutUser(t *testing.T) {
 		t.Error("a token naming no user reached the handler")
 	}))
 	req := httptest.NewRequest("GET", "/", nil)
-	req.Header.Set("Authorization", "Bearer "+makeToken("", "", "admin"))
+	req.Header.Set("Authorization", "Bearer "+makeToken("", "admin@example.com", "admin"))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
