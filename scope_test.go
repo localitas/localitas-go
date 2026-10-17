@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -68,13 +69,7 @@ func TestGetScope_DefaultsToGuestForAnonymous(t *testing.T) {
 }
 
 func makeToken(userID, email, permission string) string {
-	data := map[string]string{
-		"user_id":    userID,
-		"email":      email,
-		"permission": permission,
-	}
-	b, _ := json.Marshal(data)
-	return base64.StdEncoding.EncodeToString(b)
+	return signTestToken(testAPIToken, TokenInfo{UserID: userID, Email: email, Permission: permission})
 }
 
 func TestAuthMiddleware_SetsScope(t *testing.T) {
@@ -94,6 +89,46 @@ func TestAuthMiddleware_SetsScope(t *testing.T) {
 	}
 	if gotScope != ScopeWrite {
 		t.Errorf("expected ScopeWrite, got %q", gotScope)
+	}
+}
+
+// A token a caller made up — unsigned, re-signed with another key, or with
+// its claims edited — is refused, so nobody can act as another user.
+func TestAuthMiddleware_RejectsForgedTokens(t *testing.T) {
+	handler := AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("forged token reached the handler as %q", GetUserID(r.Context()))
+	}))
+	claims, _ := json.Marshal(TokenInfo{UserID: "alice", Permission: "admin"})
+	signed := makeToken("bob", "bob@example.com", "read")
+	payload, sig, _ := strings.Cut(signed, ".")
+	tampered := base64.RawURLEncoding.EncodeToString(claims) + "." + sig
+	for name, token := range map[string]string{
+		"unsigned base64 claims": base64.StdEncoding.EncodeToString(claims),
+		"other key":              signTestToken("another-cluster", TokenInfo{UserID: "alice", Permission: "admin"}),
+		"edited claims":          tampered,
+		"signature only":         "." + sig,
+		"payload only":           payload,
+	} {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s: got %d, want 401", name, w.Code)
+		}
+	}
+}
+
+func TestAuthMiddleware_RejectsTokenWithoutUser(t *testing.T) {
+	handler := AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a token naming no user reached the handler")
+	}))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+makeToken("", "", "admin"))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("got %d, want 401", w.Code)
 	}
 }
 

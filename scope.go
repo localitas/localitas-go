@@ -2,10 +2,7 @@ package client
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"net/http"
-	"strings"
 )
 
 // Scope represents an authorization level.
@@ -75,44 +72,21 @@ func GetName(ctx context.Context) string {
 	return v
 }
 
-// AuthMiddleware parses the Localitas bearer token and sets user identity
-// and scope in the request context. Rejects unauthenticated requests with 401.
-//
-// The bearer token is a base64-encoded JSON payload:
-//
-//	{"user_id": "...", "email": "...", "name": "...", "permission": "write"}
-//
-// The permission field is set by the Localitas platform proxy based on the
-// user's role and group memberships.
+// AuthMiddleware verifies the identity token core puts on every request it
+// forwards to the app (see ParseBearerToken) and sets the user and scope in
+// the request context. Requests without a verified user get a 401.
 func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		token := TokenFromRequest(r)
+		if token == "" {
 			http.Error(w, `{"error":"authorization required"}`, http.StatusUnauthorized)
 			return
 		}
-
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		decoded, err := base64.StdEncoding.DecodeString(token)
+		claims, err := ParseBearerToken(token)
 		if err != nil {
-			decoded, err = base64.RawStdEncoding.DecodeString(token)
-			if err != nil {
-				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
-				return
-			}
-		}
-
-		var claims struct {
-			UserID     string `json:"user_id"`
-			Email      string `json:"email"`
-			Name       string `json:"name"`
-			Permission string `json:"permission"`
-		}
-		if err := json.Unmarshal(decoded, &claims); err != nil {
-			http.Error(w, `{"error":"invalid token payload"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 			return
 		}
-
 		if claims.Email == "" && claims.UserID == "" {
 			http.Error(w, `{"error":"invalid token: no user identity"}`, http.StatusUnauthorized)
 			return
