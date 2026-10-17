@@ -3,11 +3,10 @@ package client
 import (
 	"context"
 	"database/sql"
-	"embed"
 	"fmt"
 	"io/fs"
 	"log"
-	"path/filepath"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -46,7 +45,7 @@ var (
 // NewMigrator creates a Migrator from an embedded migrations directory.
 // The migrationsFS should contain a "migrations/" directory with SQL files
 // named using the timestamp format: YYYYMMDD-HHMMSS-MMM-description.sql
-func NewMigrator(db *sql.DB, migrationsFS embed.FS, appName string) (*Migrator, error) {
+func NewMigrator(db *sql.DB, migrationsFS fs.FS, appName string) (*Migrator, error) {
 	migrations, err := loadMigrationsFromFS(migrationsFS)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load migrations: %w", err)
@@ -54,9 +53,11 @@ func NewMigrator(db *sql.DB, migrationsFS embed.FS, appName string) (*Migrator, 
 	return &Migrator{db: db, migrations: migrations}, nil
 }
 
-// Run executes all pending migrations. Idempotent — already-applied migrations
-// are skipped. Each migration SQL is split into individual statements and
-// executed sequentially. The schema_migrations table is created automatically.
+// Run applies every pending migration. Each migration is one transaction
+// that records its version before running its statements, so it applies
+// whole or not at all, and of several nodes migrating the same database at
+// once exactly one applies it: the others' transactions fail on the
+// version's primary key and change nothing.
 func (m *Migrator) Run(ctx context.Context) error {
 	if _, err := m.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -68,48 +69,102 @@ func (m *Migrator) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create migrations table: %w", err)
 	}
 
-	rows, err := m.db.QueryContext(ctx, "SELECT version FROM schema_migrations")
+	applied, err := m.appliedVersions(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get applied migrations: %w", err)
-	}
-	defer rows.Close()
-
-	applied := make(map[string]bool)
-	for rows.Next() {
-		var v string
-		rows.Scan(&v)
-		applied[v] = true
+		return err
 	}
 
 	for _, migration := range m.migrations {
 		if applied[migration.Version] {
 			continue
 		}
-		log.Printf("Applying migration %s_%s...", migration.Version, migration.Name)
-
-		stmts := splitSQL(migration.SQL)
-		for _, stmt := range stmts {
-			if _, err := m.db.ExecContext(ctx, stmt); err != nil {
-				if !isMigrationIdempotentError(err) {
-					return fmt.Errorf("migration %s_%s failed: %w", migration.Version, migration.Name, err)
-				}
-				log.Printf("⚠️  Migration %s_%s: %s (skipping)", migration.Version, migration.Name, err.Error())
+		err := m.apply(ctx, migration)
+		switch {
+		case err == nil:
+			log.Printf("✅ Applied migration %s_%s", migration.Version, migration.Name)
+		case isVersionTaken(err):
+			log.Printf("Migration %s_%s was applied by another node", migration.Version, migration.Name)
+		case isMigrationIdempotentError(err):
+			// The schema change is already in place without its version
+			// row (a database migrated before migrations were atomic).
+			if err := m.repair(ctx, migration); err != nil {
+				return err
 			}
+			log.Printf("✅ Recorded migration %s_%s whose schema was already in place", migration.Version, migration.Name)
+		default:
+			return fmt.Errorf("migration %s_%s failed: %w", migration.Version, migration.Name, err)
 		}
-
-		if _, err := m.db.ExecContext(ctx, `
-			INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)
-		`, migration.Version, migration.Name, time.Now().UTC().Unix()); err != nil {
-			return fmt.Errorf("failed to record migration %s: %w", migration.Version, err)
-		}
-
-		log.Printf("✅ Applied migration %s_%s", migration.Version, migration.Name)
 	}
 
 	return nil
 }
 
-func loadMigrationsFromFS(migrationsFS embed.FS) ([]Migration, error) {
+func (m *Migrator) appliedVersions(ctx context.Context) (map[string]bool, error) {
+	rows, err := m.db.QueryContext(ctx, "SELECT version FROM schema_migrations")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get applied migrations: %w", err)
+	}
+	defer rows.Close()
+
+	applied := make(map[string]bool)
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, fmt.Errorf("failed to read applied migrations: %w", err)
+		}
+		applied[v] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read applied migrations: %w", err)
+	}
+	return applied, nil
+}
+
+// apply runs migration as one transaction whose first statement records its
+// version.
+func (m *Migrator) apply(ctx context.Context, migration Migration) error {
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)
+	`, migration.Version, migration.Name, time.Now().UTC().Unix()); err != nil {
+		tx.Rollback()
+		return err
+	}
+	for _, stmt := range splitSQL(migration.SQL) {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// repair applies migration statement by statement, skipping schema changes
+// that are already in place, and records its version.
+func (m *Migrator) repair(ctx context.Context, migration Migration) error {
+	for _, stmt := range splitSQL(migration.SQL) {
+		if _, err := m.db.ExecContext(ctx, stmt); err != nil && !isMigrationIdempotentError(err) {
+			return fmt.Errorf("migration %s_%s failed: %w", migration.Version, migration.Name, err)
+		}
+	}
+	if _, err := m.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)
+	`, migration.Version, migration.Name, time.Now().UTC().Unix()); err != nil {
+		return fmt.Errorf("failed to record migration %s: %w", migration.Version, err)
+	}
+	return nil
+}
+
+// isVersionTaken reports whether a migration's transaction failed because
+// another node recorded the same version first.
+func isVersionTaken(err error) bool {
+	return strings.Contains(err.Error(), "UNIQUE constraint failed: schema_migrations.version")
+}
+
+func loadMigrationsFromFS(migrationsFS fs.FS) ([]Migration, error) {
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read migrations directory: %w", err)
@@ -126,7 +181,7 @@ func loadMigrationsFromFS(migrationsFS embed.FS) ([]Migration, error) {
 			return nil, fmt.Errorf("invalid migration filename %s: %w", entry.Name(), err)
 		}
 
-		sqlBytes, err := fs.ReadFile(migrationsFS, filepath.Join("migrations", entry.Name()))
+		sqlBytes, err := fs.ReadFile(migrationsFS, path.Join("migrations", entry.Name()))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read migration %s: %w", entry.Name(), err)
 		}
