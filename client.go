@@ -859,31 +859,12 @@ func (c *Client) IngestMetrics(ctx context.Context, metrics []MetricPoint) (int,
 // Each line follows the format: metric.name:value|type|#tag1:val1,tag2:val2
 // Returns the number of accepted metric lines.
 func (c *Client) IngestDogStatsD(ctx context.Context, lines string) (int, error) {
-	reqURL := c.baseURL + "/apps/tsdb/api/ingest"
-	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, strings.NewReader(lines))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Content-Type", "text/plain")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("ingest failed (%d): %s", resp.StatusCode, string(body))
-	}
-
 	var out struct {
 		Accepted int `json:"accepted"`
 	}
-	json.NewDecoder(resp.Body).Decode(&out)
+	if err := c.send(ctx, "POST", "/apps/tsdb/api/ingest", "text/plain", strings.NewReader(lines), &out); err != nil {
+		return 0, err
+	}
 	return out.Accepted, nil
 }
 
@@ -925,27 +906,31 @@ func (c *Client) Download(ctx context.Context, path string, w io.Writer) (int64,
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	if body == nil {
+		return c.send(ctx, method, path, "", nil, out)
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return c.send(ctx, method, path, "application/json", bytes.NewReader(b), out)
+}
+
+// send makes an authenticated call with a raw body of the given content type
+// and decodes a JSON response into out. A 4xx or 5xx answer is an *APIError.
+func (c *Client) send(ctx context.Context, method, path, contentType string, body io.Reader, out any) error {
 	if c == nil {
 		return fmt.Errorf("localitas client is nil: %s %s", method, path)
 	}
-	var reqBody io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reqBody = bytes.NewReader(b)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return err
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 
 	resp, err := c.http.Do(req)
@@ -954,7 +939,10 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read %s %s: %w", method, path, err)
+	}
 	if resp.StatusCode >= 400 {
 		return &APIError{
 			Method:     method,

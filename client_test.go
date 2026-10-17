@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -259,6 +260,39 @@ func TestIngestDogStatsD(t *testing.T) {
 	}
 	if accepted != 2 {
 		t.Errorf("expected 2 accepted, got %d", accepted)
+	}
+}
+
+func TestIngestDogStatsD_Failures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		apiErr bool
+	}{
+		{"rejected", http.StatusBadRequest, "no valid metric lines", true},
+		{"server error", http.StatusInternalServerError, "tsdb unavailable", true},
+		{"undecodable answer", http.StatusOK, "accepted=2", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				w.Write([]byte(tc.body))
+			}))
+			defer ts.Close()
+
+			accepted, err := New(ts.URL).IngestDogStatsD(context.Background(), "cpu.usage:75.5|g")
+			if err == nil || accepted != 0 {
+				t.Fatalf("IngestDogStatsD = %d, %v; want an error", accepted, err)
+			}
+			var apiErr *APIError
+			if errors.As(err, &apiErr) != tc.apiErr {
+				t.Fatalf("err = %T %v, want *APIError: %v", err, err, tc.apiErr)
+			}
+			if tc.apiErr && (apiErr.StatusCode != tc.status || apiErr.Body != tc.body || apiErr.Method != "POST" || apiErr.Path != "/apps/tsdb/api/ingest") {
+				t.Fatalf("APIError = %+v, want status %d body %q", apiErr, tc.status, tc.body)
+			}
+		})
 	}
 }
 
