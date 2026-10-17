@@ -458,26 +458,26 @@ type ResourceMember struct {
 	Permission string `json:"permission"`
 }
 
-// SetResourceOwner sets the owner of a resource. The owner has implicit admin access.
-func (c *Client) SetResourceOwner(ctx context.Context, app, resourceType, resourceID, ownerID string) error {
-	return c.do(ctx, "POST", "/api/permissions/set-owner", map[string]string{
-		"app": app, "resource_type": resourceType, "resource_id": resourceID, "owner_id": ownerID,
-	}, nil)
+type resourceRef struct {
+	App          string `json:"app"`
+	ResourceType string `json:"resource_type"`
+	ResourceID   string `json:"resource_id"`
 }
 
-// CheckPermission returns the effective permission level (read, write, admin, or "")
-// that a user has on a resource, combining direct user and group permissions.
-func (c *Client) CheckPermission(ctx context.Context, app, resourceType, resourceID, userID string) (string, error) {
+// ClaimResource makes the calling user the owner of a resource that has no
+// owner yet (or that the caller already owns); the owner has implicit admin
+// access. Claiming a resource another user owns fails with a 409.
+func (c *Client) ClaimResource(ctx context.Context, app, resourceType, resourceID string) error {
+	return c.do(ctx, "POST", "/api/permissions/set-owner", resourceRef{app, resourceType, resourceID}, nil)
+}
+
+// CheckPermission returns the calling user's effective permission (read,
+// write, admin, or "") on a resource, combining direct and group grants.
+func (c *Client) CheckPermission(ctx context.Context, app, resourceType, resourceID string) (string, error) {
 	var result struct {
 		Permission string `json:"permission"`
 	}
-	body := map[string]string{
-		"app": app, "resource_type": resourceType, "resource_id": resourceID,
-	}
-	if userID != "" {
-		body["user_id"] = userID
-	}
-	if err := c.do(ctx, "POST", "/api/permissions/check", body, &result); err != nil {
+	if err := c.do(ctx, "POST", "/api/permissions/check", resourceRef{app, resourceType, resourceID}, &result); err != nil {
 		return "", err
 	}
 	return result.Permission, nil
@@ -527,7 +527,8 @@ func (c *Client) GetResourceOwner(ctx context.Context, app, resourceType, resour
 	return result.OwnerID, nil
 }
 
-// DeleteResourcePermissions removes all permission entries for a resource.
+// DeleteResourcePermissions removes every grant on a resource, its owner
+// included. The calling user must administer the resource.
 func (c *Client) DeleteResourcePermissions(ctx context.Context, app, resourceType, resourceID string) error {
 	path := fmt.Sprintf("/api/permissions/%s/%s/%s",
 		url.PathEscape(app), url.PathEscape(resourceType), url.PathEscape(resourceID))
@@ -552,6 +553,33 @@ func (c *Client) ListAccessibleResources(ctx context.Context, app, resourceType 
 // App backends reach core with core's own system token, whose identity is not
 // that user, so the user is passed explicitly. They require an admin-scoped
 // token.
+
+// SetResourceOwnerAsUser records userID as the owner of a resource a backend
+// created for them. It fails with a 409 when another user owns it.
+func (c *Client) SetResourceOwnerAsUser(ctx context.Context, userID, app, resourceType, resourceID string) error {
+	path := fmt.Sprintf("/api/permissions/users/%s/set-owner", url.PathEscape(userID))
+	return c.do(ctx, "POST", path, resourceRef{app, resourceType, resourceID}, nil)
+}
+
+// CheckPermissionAsUser is CheckPermission for userID.
+func (c *Client) CheckPermissionAsUser(ctx context.Context, userID, app, resourceType, resourceID string) (string, error) {
+	var result struct {
+		Permission string `json:"permission"`
+	}
+	path := fmt.Sprintf("/api/permissions/users/%s/check", url.PathEscape(userID))
+	if err := c.do(ctx, "POST", path, resourceRef{app, resourceType, resourceID}, &result); err != nil {
+		return "", err
+	}
+	return result.Permission, nil
+}
+
+// DeleteResourcePermissionsAsUser is DeleteResourcePermissions acting as
+// userID, who must administer the resource.
+func (c *Client) DeleteResourcePermissionsAsUser(ctx context.Context, userID, app, resourceType, resourceID string) error {
+	path := fmt.Sprintf("/api/permissions/users/%s/resources/%s/%s/%s",
+		url.PathEscape(userID), url.PathEscape(app), url.PathEscape(resourceType), url.PathEscape(resourceID))
+	return c.do(ctx, "DELETE", path, nil, nil)
+}
 
 // ListAccessibleResourcesAsUser is ListAccessibleResources for userID.
 func (c *Client) ListAccessibleResourcesAsUser(ctx context.Context, userID, app, resourceType string) ([]ResourcePermission, error) {
