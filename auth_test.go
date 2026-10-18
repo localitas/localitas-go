@@ -16,7 +16,18 @@ const testAPIToken = "lt_test_cluster_token"
 
 func TestMain(m *testing.M) {
 	SetIdentityKeyFromAPIToken(testAPIToken)
+	restoreTestIdentity()
 	os.Exit(m.Run())
+}
+
+// restoreTestIdentity pins the keys tests verify with, so no test asks a
+// running core for them.
+func restoreTestIdentity() {
+	ResetIdentityPublicKeys()
+	if err := SetIdentityPublicKeys(goldenEd25519PublicKey); err != nil {
+		panic(err)
+	}
+	ResetAcceptLegacyIdentityTokens()
 }
 
 // signTestToken signs claims exactly as core does: base64url JSON, a dot,

@@ -173,7 +173,7 @@ func (a *AutomationClient) waitViaPubSub(ctx context.Context, runID string, time
 	wsURL = "ws" + wsURL[4:]
 	wsURL += "/apps/cache/ws/localitas_automations"
 
-	ps := NewPubSubWS(wsURL, a.client.token)
+	ps := NewPubSubWS(wsURL, a.client.bearer(ctx))
 	defer ps.Close()
 
 	done := make(chan *AutomationRun, 1)

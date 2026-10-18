@@ -23,6 +23,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -120,7 +121,14 @@ func isContainer() bool {
 type Client struct {
 	baseURL string
 	http    *http.Client
-	token   string
+	token   *bearerToken
+}
+
+// bearerToken is the token a client sends, shared by its copies so a
+// refreshed identity token reaches all of them.
+type bearerToken struct {
+	mu    sync.Mutex
+	value string
 }
 
 // New creates a Client bound to the given base URL (e.g. "http://localhost:8090").
@@ -146,8 +154,73 @@ func (c *Client) WithHTTPClient(h *http.Client) *Client {
 //	appClient := client.New(url).WithToken(client.TokenFromRequest(r))
 func (c *Client) WithToken(bearer string) *Client {
 	clone := *c
-	clone.token = bearer
+	clone.token = &bearerToken{value: bearer}
 	return &clone
+}
+
+// bearer returns the token to send. An identity token within a minute of its
+// expiry is first refreshed with core (POST /api/auth/identity/refresh), up
+// to the max claim core fixed when it minted it; if the refresh fails the
+// current token is sent and core decides.
+func (c *Client) bearer(ctx context.Context) string {
+	if c.token == nil {
+		return ""
+	}
+	c.token.mu.Lock()
+	defer c.token.mu.Unlock()
+	info, ok := unverifiedClaims(c.token.value)
+	if ok && info.ExpiresAt != 0 && info.MaxExpiry > info.ExpiresAt && info.ExpiresAt-identityNow().Unix() < refreshBeforeSeconds {
+		if refreshed, err := c.refreshIdentity(ctx, c.token.value); err == nil && refreshed != "" {
+			c.token.value = refreshed
+		}
+	}
+	return c.token.value
+}
+
+type identityTokenResponse struct {
+	Token     string `json:"token"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+func (c *Client) refreshIdentity(ctx context.Context, token string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/auth/identity/refresh", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("refresh identity token: %d", resp.StatusCode)
+	}
+	var out identityTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	return out.Token, nil
+}
+
+type identityForUserRequest struct {
+	UserID     string `json:"user_id"`
+	Permission string `json:"permission"`
+	TTLSeconds int    `json:"ttl_seconds"`
+}
+
+// IdentityForUser asks core for a short-lived identity token for an existing
+// user, so an app's background work (a scheduled sync) can act as that user.
+// Only core's system token (LOCALITAS_API_TOKEN) may ask; core grants at
+// most write and never more than the user's own permission, caps ttl at 15
+// minutes, and audit-logs the request. The token cannot be refreshed: ask
+// again for more.
+func (c *Client) IdentityForUser(ctx context.Context, userID string, permission Scope, ttl time.Duration) (string, error) {
+	var out identityTokenResponse
+	err := c.do(ctx, http.MethodPost, "/api/auth/identity/for-user", identityForUserRequest{
+		UserID: userID, Permission: string(permission), TTLSeconds: int(ttl / time.Second),
+	}, &out)
+	return out.Token, err
 }
 
 // ----- Databases -------------------------------------------------------------
@@ -796,8 +869,8 @@ func (c *Client) VaultImport1Password(ctx context.Context, filename string, data
 		return nil, err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token := c.bearer(ctx); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -891,8 +964,8 @@ func (c *Client) Download(ctx context.Context, path string, w io.Writer) (int64,
 	if err != nil {
 		return 0, err
 	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token := c.bearer(ctx); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -927,8 +1000,8 @@ func (c *Client) send(ctx context.Context, method, path, contentType string, bod
 	if err != nil {
 		return err
 	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token := c.bearer(ctx); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
