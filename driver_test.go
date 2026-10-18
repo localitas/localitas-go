@@ -166,7 +166,7 @@ func TestDriver_ColumnTypeDatabaseTypeName(t *testing.T) {
 func newServiceRegistryServer() *httptest.Server {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("POST /apps/data/api/databases", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /apps/data/api/system-dbs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Database{ID: "sr-db-1", Name: "service_registry", System: true})
 	})
