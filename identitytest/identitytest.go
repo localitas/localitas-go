@@ -24,19 +24,29 @@ type Signer struct {
 // once they are switched off.
 func New(t testing.TB) *Signer {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	s, err := Install()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.SetIdentityPublicKeys(base64.RawURLEncoding.EncodeToString(pub)); err != nil {
-		t.Fatal(err)
-	}
-	client.SetAcceptLegacyIdentityTokens(false)
 	t.Cleanup(func() {
 		client.ResetIdentityPublicKeys()
 		client.ResetAcceptLegacyIdentityTokens()
 	})
-	return &Signer{priv: priv}
+	return s
+}
+
+// Install is New for a whole test binary (call it from TestMain): the key
+// stays installed until the process exits.
+func Install() (*Signer, error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	if err := client.SetIdentityPublicKeys(base64.RawURLEncoding.EncodeToString(pub)); err != nil {
+		return nil, err
+	}
+	client.SetAcceptLegacyIdentityTokens(false)
+	return &Signer{priv: priv}, nil
 }
 
 // Token signs info as core would: issued now and valid for five minutes
