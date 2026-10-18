@@ -174,7 +174,7 @@ func (c *Client) CreateDatabase(ctx context.Context, name string) (*Database, er
 // Idempotent by name. Requires admin role.
 func (c *Client) CreateSystemDatabase(ctx context.Context, name string) (*Database, error) {
 	var out Database
-	if err := c.do(ctx, "POST", "/apps/data/api/databases", map[string]any{"name": name, "system": true}, &out); err != nil {
+	if err := c.do(ctx, "POST", "/apps/data/api/system-dbs", map[string]any{"name": name}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
