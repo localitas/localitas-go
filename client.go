@@ -954,6 +954,13 @@ func (c *Client) Do(ctx context.Context, method, path string, body any, out any)
 	return c.do(ctx, method, path, body, out)
 }
 
+// Send makes an authenticated call with a raw body of contentType, such as a
+// file's bytes, streamed as it is read, and JSON-decodes the response into
+// out if non-nil.
+func (c *Client) Send(ctx context.Context, method, path, contentType string, body io.Reader, out any) error {
+	return c.send(ctx, method, path, contentType, body, out)
+}
+
 // Download streams the response body of an authenticated GET to w, for
 // endpoints that return files rather than JSON. It returns the bytes written.
 func (c *Client) Download(ctx context.Context, path string, w io.Writer) (int64, error) {
