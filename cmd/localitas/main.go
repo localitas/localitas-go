@@ -61,6 +61,8 @@ func main() {
 			printMigrateUsage()
 			os.Exit(1)
 		}
+	case "sql":
+		sqlCommand(args[1:])
 	default:
 		printUsage()
 		os.Exit(1)
@@ -78,6 +80,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  migrate check        Syntax-check all migration SQL files")
 	fmt.Fprintln(os.Stderr, "  migrate status       Show applied vs pending migrations")
 	fmt.Fprintln(os.Stderr, "  migrate run          Run all pending migrations")
+	fmt.Fprintln(os.Stderr, "  sql <db> [stmt]      Run SQL on a database (sys_<app> for a core app's); reads stdin without stmt")
 }
 
 func printMigrateUsage() {
