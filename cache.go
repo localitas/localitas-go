@@ -117,6 +117,18 @@ func (r *CacheRef) Get(ctx context.Context, key string) (string, error) {
 	return out.Value, nil
 }
 
+// GetConsistent is Get that sees every write committed before it, through
+// whichever node it entered: a node's plain read answers from its own copy,
+// which may not yet hold a write made through another node a moment ago.
+// Use it where a stale value is wrong, such as a count of failed logons.
+func (r *CacheRef) GetConsistent(ctx context.Context, key string) (string, error) {
+	var out cacheValueResult
+	if err := r.client.cacheDo(ctx, "GET", r.path("keys", key)+"?consistent=true", nil, &out); err != nil {
+		return "", err
+	}
+	return out.Value, nil
+}
+
 // Set stores a value with an optional TTL. Pass 0 for no expiry.
 func (r *CacheRef) Set(ctx context.Context, key, value string, ttl time.Duration) error {
 	return r.client.cacheDo(ctx, "PUT", r.path("keys", key), cacheValueRequest{Value: value, TTL: ttlSeconds(ttl)}, nil)

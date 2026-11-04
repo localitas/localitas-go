@@ -131,6 +131,16 @@ func TestCacheRef_KeyValueDecodesCoreEnvelope(t *testing.T) {
 	if err != nil || got != "v1" {
 		t.Fatalf("Get = %q, %v; want v1", got, err)
 	}
+	if q := f.last(t).Query; q != "" {
+		t.Fatalf("Get query = %q, want none", q)
+	}
+	got, err = c.GetConsistent(ctx, "k1")
+	if err != nil || got != "v1" {
+		t.Fatalf("GetConsistent = %q, %v; want v1", got, err)
+	}
+	if call := f.last(t); call.Key != "k1" || call.Query != "consistent=true" {
+		t.Fatalf("GetConsistent asked for key %q query %q, want k1 consistent=true", call.Key, call.Query)
+	}
 	if err := c.Set(ctx, "k1", "v1", 5*time.Minute); err != nil {
 		t.Fatal(err)
 	}
