@@ -35,11 +35,59 @@ type Automation struct {
 	IsEnabled   bool   `json:"is_enabled,omitempty"`
 }
 
+// Where a node runs.
+const (
+	// StrategyRaftLeader runs the node on one node, the leader.
+	StrategyRaftLeader = "raft_leader"
+	// StrategyAnyNode runs the node on one node.
+	StrategyAnyNode = "any_node"
+	// StrategyAllNodes runs the node on every node, for per-node work.
+	StrategyAllNodes = "all_nodes"
+	// StrategyLocalOnly runs the node on every node, each calling its own.
+	StrategyLocalOnly = "local_only"
+)
+
+// DAGNode is one node of an automation. Its settings are its type's, as
+// JSON: build an http-api node with HTTPNode. Core refuses a key the
+// node's type does not have.
 type DAGNode struct {
-	NodeID            string         `json:"node_id"`
-	NodeType          string         `json:"node_type"`
-	ExecutionStrategy string         `json:"execution_strategy"`
-	Metadata          map[string]any `json:"metadata"`
+	NodeID            string          `json:"node_id"`
+	NodeType          string          `json:"node_type"`
+	ExecutionStrategy string          `json:"execution_strategy"`
+	Metadata          json.RawMessage `json:"metadata,omitempty"`
+}
+
+// HTTPNodeSettings is an http-api node's call. Unset fields take core's
+// defaults: method POST, timeout 30s, 3 retries, backoff 2s ×2 up to 30s,
+// expected status 200.
+type HTTPNodeSettings struct {
+	URL               string            `json:"url"`
+	Method            string            `json:"method,omitempty"`
+	ContentType       string            `json:"content_type,omitempty"`
+	Headers           map[string]string `json:"headers,omitempty"`
+	Body              json.RawMessage   `json:"body,omitempty"`
+	TimeoutMs         int               `json:"timeout_ms,omitempty"`
+	MaxRetries        *int              `json:"max_retries,omitempty"`
+	BackoffMs         *int              `json:"backoff_ms,omitempty"`
+	BackoffMultiplier float64           `json:"backoff_multiplier,omitempty"`
+	MaxBackoffMs      int               `json:"max_backoff_ms,omitempty"`
+	ExpectedStatus    int               `json:"expected_status,omitempty"`
+	AsyncTimeoutMs    int               `json:"async_timeout_ms,omitempty"`
+	VaultCredentialID string            `json:"vault_credential_id,omitempty"`
+	VaultAuthFormat   string            `json:"vault_auth_format,omitempty"`
+	VaultHeaderName   string            `json:"vault_header_name,omitempty"`
+	VaultHeaderPrefix string            `json:"vault_header_prefix,omitempty"`
+}
+
+// Count is n as an optional setting (MaxRetries, BackoffMs), where 0 is a
+// value and not "use the default".
+func Count(n int) *int { return &n }
+
+// HTTPNode is an http-api node that makes the call s describes.
+func HTTPNode(id, strategy string, s HTTPNodeSettings) DAGNode {
+	// A struct of strings, ints and raw JSON always encodes.
+	meta, _ := json.Marshal(s)
+	return DAGNode{NodeID: id, NodeType: "http-api", ExecutionStrategy: strategy, Metadata: meta}
 }
 
 type DAGConfig struct {
@@ -50,9 +98,8 @@ type DAGConfig struct {
 }
 
 type PeriodicTrigger struct {
-	Schedule   string `json:"schedule"`
-	Timezone   string `json:"timezone"`
-	MaxRetries int    `json:"max_retries"`
+	Schedule string `json:"schedule"`
+	Timezone string `json:"timezone"`
 }
 
 type TriggerConfig struct {
