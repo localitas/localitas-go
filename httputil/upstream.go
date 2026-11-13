@@ -3,6 +3,7 @@ package httputil
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -20,6 +21,29 @@ type Upstream struct {
 	// Delay is the pause before the second try, and each later try waits
 	// one Delay longer; 0 is 500ms.
 	Delay time.Duration
+	// AttemptTimeout is how long one try may take, its answer read to the
+	// end included; a try that stalls is given up and the service asked
+	// again. 0 is 10s.
+	AttemptTimeout time.Duration
+}
+
+func (up Upstream) attemptTimeout() time.Duration {
+	if up.AttemptTimeout > 0 {
+		return up.AttemptTimeout
+	}
+	return 10 * time.Second
+}
+
+// cancelOnClose ends a try's context when its answer is closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
 
 // UpstreamError is a failure of a service an app depends on, not of what was
@@ -57,8 +81,10 @@ func (up Upstream) Get(ctx context.Context, service, u string) (*http.Response, 
 			case <-time.After(delay * time.Duration(attempt)):
 			}
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		tryCtx, cancel := context.WithTimeout(ctx, up.attemptTimeout())
+		req, err := http.NewRequestWithContext(tryCtx, http.MethodGet, u, nil)
 		if err != nil {
+			cancel()
 			return nil, err
 		}
 		if up.UserAgent != "" {
@@ -66,14 +92,20 @@ func (up Upstream) Get(ctx context.Context, service, u string) (*http.Response, 
 		}
 		resp, err := client.Do(req)
 		if err != nil {
+			cancel()
+			if ctx.Err() != nil {
+				return nil, &UpstreamError{Service: service, Err: ctx.Err()}
+			}
 			last = err
 			continue
 		}
 		if resp.StatusCode >= http.StatusInternalServerError {
 			resp.Body.Close()
+			cancel()
 			last = fmt.Errorf("returned %d", resp.StatusCode)
 			continue
 		}
+		resp.Body = cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 		return resp, nil
 	}
 	return nil, &UpstreamError{Service: service, Err: last}

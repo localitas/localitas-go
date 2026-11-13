@@ -3,6 +3,7 @@ package httputil
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -31,6 +32,51 @@ func flaky(t *testing.T, failures int, status int) (*httptest.Server, *atomic.In
 }
 
 var quick = Upstream{UserAgent: "Localitas Test/1.0", Delay: time.Millisecond}
+
+// A service that stalls a request rather than failing it is not waited on
+// for ever: the stalled try is given up after AttemptTimeout and the next
+// one answered, well before the caller would give up.
+func TestUpstream_AStalledTryIsGivenUpAndAskedAgain(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		w.Write([]byte("forecast"))
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	up := Upstream{Delay: time.Millisecond, AttemptTimeout: 100 * time.Millisecond}
+	start := time.Now()
+	resp, err := up.Get(ctx, "forecast", srv.URL)
+	if err != nil {
+		t.Fatalf("a stalled try was not asked again: %v after %s", err, time.Since(start))
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if string(b) != "forecast" || calls.Load() != 2 {
+		t.Errorf("answer %q after %d tries", b, calls.Load())
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Errorf("the stalled try was waited on for %s", time.Since(start))
+	}
+}
+
+// With no AttemptTimeout, a try is given up after the default's ten
+// seconds, so an app's request is never left hanging on a public service.
+func TestUpstream_TriesHaveADefaultTimeout(t *testing.T) {
+	if (Upstream{}).attemptTimeout() != 10*time.Second {
+		t.Errorf("default try timeout: %s", (Upstream{}).attemptTimeout())
+	}
+}
 
 // A service failing for a moment is asked again and its answer returned.
 func TestUpstream_AMomentaryFailureIsTriedAgain(t *testing.T) {
