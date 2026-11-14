@@ -12,7 +12,8 @@ import (
 // dictionary, a map), asking again after a pause when the service fails for
 // a moment, as public APIs now and then do.
 type Upstream struct {
-	// Client sends the requests; nil is http.DefaultClient.
+	// Client sends the requests; nil is a client whose idle HTTP/2
+	// connections are checked with pings (upstreamClient).
 	Client *http.Client
 	// UserAgent is sent with each request when set.
 	UserAgent string
@@ -25,6 +26,23 @@ type Upstream struct {
 	// end included; a try that stalls is given up and the service asked
 	// again. 0 is 10s.
 	AttemptTimeout time.Duration
+}
+
+// upstreamClient is the default client. A NAT, such as Docker Desktop's, can
+// drop a connection without telling either end. HTTP/2 keeps no watch on a
+// connection by default, and a request that times out on it leaves it in
+// the pool, so every try after it would stall on it too. A connection
+// silent for 5 s is pinged, and closed when no answer comes in 3 s: one
+// that died is found within a try's 10 s, and the next try dials afresh.
+var upstreamClient = newUpstreamClient(http.DefaultTransport.(*http.Transport), 5*time.Second, 3*time.Second)
+
+// newUpstreamClient is a client on a copy of base whose HTTP/2 connections
+// are pinged after sendPing of silence and closed when the answer takes
+// longer than pingTimeout.
+func newUpstreamClient(base *http.Transport, sendPing, pingTimeout time.Duration) *http.Client {
+	t := base.Clone()
+	t.HTTP2 = &http.HTTP2Config{SendPingTimeout: sendPing, PingTimeout: pingTimeout}
+	return &http.Client{Transport: t}
 }
 
 func (up Upstream) attemptTimeout() time.Duration {
@@ -62,7 +80,7 @@ func (e *UpstreamError) Unwrap() error { return e.Err }
 func (up Upstream) Get(ctx context.Context, service, u string) (*http.Response, error) {
 	client := up.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = upstreamClient
 	}
 	attempts := up.Attempts
 	if attempts <= 0 {
