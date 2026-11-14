@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -163,94 +164,70 @@ func (a *AutomationClient) PublishResult(ctx context.Context, runID string, stat
 	return a.client.do(ctx, "POST", fmt.Sprintf("/apps/automation/api/runs/%s/complete", runID), payload, nil)
 }
 
-func (a *AutomationClient) WaitForRun(ctx context.Context, runID string, opts ...WaitOpts) (*AutomationRun, error) {
-	var o WaitOpts
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	if o.Timeout == 0 {
-		o.Timeout = time.Hour
-	}
-	if o.PollInterval == 0 {
-		o.PollInterval = 2 * time.Second
-	}
+// The automations cache and the channel every finished run is announced on.
+const (
+	automationsCache   = "localitas_automations"
+	completionsChannel = "completions"
+)
 
-	if o.UsePubSub && a.client.baseURL != "" {
-		run, err := a.waitViaPubSub(ctx, runID, o.Timeout)
-		if err == nil {
-			return run, nil
-		}
-	}
-
-	return a.waitViaPoll(ctx, runID, o.Timeout, o.PollInterval)
-}
-
+// WaitOpts bounds WaitForRun.
 type WaitOpts struct {
-	Timeout      time.Duration
-	PollInterval time.Duration
-	UsePubSub    bool
+	// Timeout is how long to wait for the run; an hour when zero.
+	Timeout time.Duration
 }
 
-func (a *AutomationClient) waitViaPoll(ctx context.Context, runID string, timeout, interval time.Duration) (*AutomationRun, error) {
-	deadline := time.After(timeout)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+// runFinished reports whether a run has its outcome.
+func runFinished(run *AutomationRun) bool {
+	return run.Status != "running" && run.Status != "pending"
+}
 
-	for {
-		run, err := a.GetRun(ctx, runID)
-		if err != nil {
-			return nil, err
-		}
-		if run.Status != "running" && run.Status != "pending" {
-			return run, nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-deadline:
-			return nil, fmt.Errorf("timeout waiting for run %s", runID)
-		case <-ticker.C:
-		}
+// WaitForRun returns the run once it has finished, without polling it.
+//
+// Every finished run is announced once on the completions channel, after
+// its outcome is recorded. WaitForRun notes the channel's last message,
+// then reads the run; the read is linearizable, so a run whose completion
+// is at or before the noted message is read finished. A run still going is
+// waited for by watching the channel after the noted message: its
+// completion comes after it, so it cannot be missed. A run that does not
+// exist is the read's 404.
+func (a *AutomationClient) WaitForRun(ctx context.Context, runID string, opts ...WaitOpts) (*AutomationRun, error) {
+	timeout := time.Hour
+	if len(opts) > 0 && opts[0].Timeout > 0 {
+		timeout = opts[0].Timeout
 	}
-}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
-func (a *AutomationClient) waitViaPubSub(ctx context.Context, runID string, timeout time.Duration) (*AutomationRun, error) {
-	wsURL := a.client.baseURL
-	wsURL = "ws" + wsURL[4:]
-	wsURL += "/apps/cache/ws/localitas_automations"
+	noted, err := a.client.Cache(automationsCache).PubSub(completionsChannel, PubSubOpts{}).LastSeq(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("note the completions channel: %w", err)
+	}
+	run, err := a.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if runFinished(run) {
+		return run, nil
+	}
 
-	ps := NewPubSubWS(wsURL, a.client.bearer(ctx))
+	ps := NewPubSubWS("ws"+strings.TrimPrefix(a.client.baseURL, "http")+"/apps/cache/ws/"+automationsCache, a.client.bearer(ctx))
 	defer ps.Close()
-
-	done := make(chan *AutomationRun, 1)
-	ps.Subscribe("completions", "sdk-wait-"+runID, func(msg PubSubMessage) {
-		var payload struct {
-			RunID  string                 `json:"run_id"`
-			Status string                 `json:"status"`
-			Result map[string]interface{} `json:"result"`
-			Error  string                 `json:"error"`
+	finished := make(chan struct{}, 1)
+	ps.Watch(completionsChannel, noted, func(msg PubSubMessage) {
+		var announced struct {
+			RunID string `json:"run_id"`
 		}
-		if json.Unmarshal([]byte(msg.Value), &payload) == nil && payload.RunID == runID {
-			run := &AutomationRun{
-				ID:     runID,
-				Status: payload.Status,
-				Result: payload.Result,
-				Error:  payload.Error,
-			}
+		if json.Unmarshal([]byte(msg.Value), &announced) == nil && announced.RunID == runID {
 			select {
-			case done <- run:
+			case finished <- struct{}{}:
 			default:
 			}
 		}
 	})
-
 	select {
-	case run := <-done:
-		return run, nil
+	case <-finished:
+		return a.GetRun(ctx, runID)
 	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("pubsub timeout waiting for run %s", runID)
+		return nil, fmt.Errorf("wait for run %s: %w", runID, ctx.Err())
 	}
 }
