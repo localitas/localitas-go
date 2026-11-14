@@ -47,6 +47,20 @@ type PubSubWS struct {
 type subscription struct {
 	consumer string
 	callback func(PubSubMessage)
+	// A watch keeps no cursor on the server: the client remembers the last
+	// message it got (after) and resumes after it on reconnect. fromLatest
+	// holds until the server names the point a latest-watch started at.
+	watch      bool
+	after      int64
+	fromLatest bool
+}
+
+// request is the action that (re)starts the subscription on a connection.
+func (s subscription) request(channel string, batchSize int) wsOutgoing {
+	if !s.watch {
+		return wsOutgoing{Action: "subscribe", Channel: channel, Consumer: s.consumer, Count: batchSize}
+	}
+	return wsOutgoing{Action: "watch", Channel: channel, Seq: s.after, FromLatest: s.fromLatest, Count: batchSize}
 }
 
 // wsOutgoing is the JSON envelope sent to the server.
@@ -60,6 +74,7 @@ type wsOutgoing struct {
 	Seq           int64  `json:"seq,omitempty"`
 	MaxSize       int    `json:"max_size,omitempty"`
 	MaxAgeSeconds int    `json:"max_age_seconds,omitempty"`
+	FromLatest    bool   `json:"from_latest,omitempty"`
 }
 
 // wsIncoming is the JSON envelope received from the server.
@@ -126,18 +141,33 @@ func NewPubSubWS(wsURL, token string, opts ...PubSubWSOption) *PubSubWS {
 // is used for server-side cursor tracking so no messages are missed across
 // reconnects. Only one subscription per channel is active at a time.
 func (ps *PubSubWS) Subscribe(channel, consumer string, callback func(PubSubMessage)) {
+	ps.start(channel, subscription{consumer: consumer, callback: callback})
+}
+
+// Watch calls callback with each message published to channel after
+// afterSeq, as the server's node applies it: no cursor is kept and the
+// cluster is asked for nothing. To miss nothing a later action publishes,
+// note the channel's LastSeq (PubSubRef.LastSeq) before the action and
+// watch after it. A reconnect resumes after the last message delivered.
+// One subscription or watch per channel is active at a time.
+func (ps *PubSubWS) Watch(channel string, afterSeq int64, callback func(PubSubMessage)) {
+	ps.start(channel, subscription{callback: callback, watch: true, after: afterSeq})
+}
+
+// WatchLatest is Watch from the channel's newest message when the watch
+// starts: only what is published from then on.
+func (ps *PubSubWS) WatchLatest(channel string, callback func(PubSubMessage)) {
+	ps.start(channel, subscription{callback: callback, watch: true, fromLatest: true})
+}
+
+func (ps *PubSubWS) start(channel string, sub subscription) {
 	ps.mu.Lock()
-	ps.subscriptions[channel] = subscription{consumer: consumer, callback: callback}
+	ps.subscriptions[channel] = sub
 	conn := ps.conn
 	ps.mu.Unlock()
 
 	if conn != nil {
-		ps.send(conn, wsOutgoing{
-			Action:   "subscribe",
-			Channel:  channel,
-			Consumer: consumer,
-			Count:    ps.batchSize,
-		})
+		ps.send(conn, sub.request(channel, ps.batchSize))
 	}
 }
 
@@ -244,15 +274,13 @@ func (ps *PubSubWS) connect() {
 	}
 	ps.mu.Unlock()
 
-	ps.emit("connected", nil)
+	// "connected" is emitted for the server's greeting (readLoop), once per
+	// connection: emitted here as well it fired twice on every reconnect, and
+	// on the first connection before NewPubSubWS returned, where no listener
+	// could see it.
 
 	for ch, sub := range subs {
-		ps.send(conn, wsOutgoing{
-			Action:   "subscribe",
-			Channel:  ch,
-			Consumer: sub.consumer,
-			Count:    ps.batchSize,
-		})
+		ps.send(conn, sub.request(ch, ps.batchSize))
 	}
 
 	go ps.readLoop(conn)
@@ -290,9 +318,28 @@ func (ps *PubSubWS) readLoop(conn *websocket.Conn) {
 
 		ps.emit(msg.Type, msg)
 
+		if msg.Type == "subscribed" && msg.Channel != "" {
+			ps.mu.Lock()
+			if sub, ok := ps.subscriptions[msg.Channel]; ok && sub.watch && sub.fromLatest {
+				sub.after, sub.fromLatest = msg.Seq, false
+				ps.subscriptions[msg.Channel] = sub
+			}
+			ps.mu.Unlock()
+		}
+
 		if msg.Type == "message" && msg.Channel != "" {
 			ps.mu.Lock()
 			sub, ok := ps.subscriptions[msg.Channel]
+			if ok && sub.watch {
+				// A resumed watch may resend what was delivered before the
+				// connection dropped.
+				if msg.Seq <= sub.after {
+					ps.mu.Unlock()
+					continue
+				}
+				sub.after = msg.Seq
+				ps.subscriptions[msg.Channel] = sub
+			}
 			ps.mu.Unlock()
 
 			if ok && sub.callback != nil {

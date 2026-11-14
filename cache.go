@@ -459,6 +459,30 @@ func (p *PubSubRef) path(segments ...string) string {
 	return p.cache.path(append([]string{"pubsub", p.channel}, segments...)...)
 }
 
+// PubSubChannelInfo describes a channel as the node asked holds it.
+type PubSubChannelInfo struct {
+	Name          string `json:"name"`
+	MessageCount  int64  `json:"message_count"`
+	LastMessageAt int64  `json:"last_message_at"`
+	LastSeq       int64  `json:"last_seq"`
+}
+
+// Info describes the channel on the node asked; an empty channel is all
+// zeros.
+func (p *PubSubRef) Info(ctx context.Context) (PubSubChannelInfo, error) {
+	var out PubSubChannelInfo
+	err := p.cache.client.cacheDo(ctx, "GET", p.path(), nil, &out)
+	return out, err
+}
+
+// LastSeq is the newest message's sequence number on the node asked: note
+// it before starting something whose outcome is published to the channel,
+// then watch after it (PubSubWS.Watch), and the outcome cannot be missed.
+func (p *PubSubRef) LastSeq(ctx context.Context) (int64, error) {
+	info, err := p.Info(ctx)
+	return info.LastSeq, err
+}
+
 // Publish appends a message to the channel. Returns the sequence number.
 // Bounded channels auto-trim by count (MaxSize) and/or age (MaxAge).
 func (p *PubSubRef) Publish(ctx context.Context, value string) (int64, error) {
