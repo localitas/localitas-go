@@ -445,18 +445,6 @@ func (c *Client) ensureServiceRegistry(ctx context.Context) (string, error) {
 	return db.ID, nil
 }
 
-// RegisterExternalApp registers an external app with the platform so it
-// appears in the app selector UI. The app must be reachable at appURL.
-func (c *Client) RegisterExternalApp(ctx context.Context, name, displayName, appURL, icon string) error {
-	body := map[string]string{
-		"name":         name,
-		"display_name": displayName,
-		"url":          appURL,
-		"icon":         icon,
-	}
-	return c.do(ctx, "POST", "/apps/ext", body, nil)
-}
-
 // RegisterService registers a named service URL in the platform's service registry.
 // Other apps can discover it via DiscoverService. Idempotent by name.
 func (c *Client) RegisterService(ctx context.Context, name, serviceURL string) error {
