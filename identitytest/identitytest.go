@@ -19,19 +19,14 @@ type Signer struct {
 	priv ed25519.PrivateKey
 }
 
-// New makes a fresh identity key the SDK verifies with for the rest of t,
-// and refuses legacy (HMAC or unexpiring) tokens meanwhile, as core does
-// once they are switched off.
+// New makes a fresh identity key the SDK verifies with for the rest of t.
 func New(t testing.TB) *Signer {
 	t.Helper()
 	s, err := Install()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		client.ResetIdentityPublicKeys()
-		client.ResetAcceptLegacyIdentityTokens()
-	})
+	t.Cleanup(client.ResetIdentityPublicKeys)
 	return s
 }
 
@@ -45,7 +40,6 @@ func Install() (*Signer, error) {
 	if err := client.SetIdentityPublicKeys(base64.RawURLEncoding.EncodeToString(pub)); err != nil {
 		return nil, err
 	}
-	client.SetAcceptLegacyIdentityTokens(false)
 	return &Signer{priv: priv}, nil
 }
 

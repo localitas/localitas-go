@@ -31,10 +31,6 @@ type TokenInfo struct {
 	Audience   string `json:"aud,omitempty"`
 }
 
-// identityKeyDomain matches the domain core derives its legacy token signing
-// key under from the cluster API token.
-const identityKeyDomain = "localitas-internal-token-v1"
-
 const (
 	// identityClockSkew is the clock difference tolerated with core.
 	identityClockSkew = 120
@@ -48,7 +44,7 @@ const (
 var (
 	ErrUnsignedToken    = errors.New("identity token is not signed")
 	ErrBadSignature     = errors.New("identity token signature does not verify")
-	ErrNoIdentityKey    = errors.New("no identity key: set LOCALITAS_IDENTITY_PUBLIC_KEY (or LOCALITAS_API_TOKEN for legacy tokens)")
+	ErrNoIdentityKey    = errors.New("no identity key: set LOCALITAS_IDENTITY_PUBLIC_KEY")
 	ErrTokenExpired     = errors.New("identity token expired")
 	ErrTokenNotYetValid = errors.New("identity token issued in the future")
 	ErrLegacyToken      = errors.New("legacy identity tokens are no longer accepted")
@@ -58,8 +54,7 @@ var (
 )
 
 // identity holds what identity tokens are verified with: core's Ed25519
-// public keys (by key ID), whether legacy HMAC/unexpiring tokens are still
-// accepted, and the legacy HMAC key.
+// public keys, by key ID.
 var identity struct {
 	mu sync.Mutex
 
@@ -67,13 +62,6 @@ var identity struct {
 	keysSet    bool // set explicitly, from the environment, or fetched from core
 	lastFetch  time.Time
 	fetchedKey bool
-
-	legacy        bool
-	legacySet     bool // set explicitly or from the environment
-	legacyFetched *bool
-
-	hmacKey     []byte
-	hmacDerived bool
 }
 
 // Ed25519KeyID names an identity public key as core does: a prefix and the
@@ -113,7 +101,7 @@ func parsePublicKeys(keys []string) (map[string]ed25519.PublicKey, error) {
 
 // SetIdentityPublicKeys sets the Ed25519 public keys (base64url) identity
 // tokens are verified with, instead of LOCALITAS_IDENTITY_PUBLIC_KEY or the
-// key core serves. With none, only legacy tokens can verify.
+// key core serves. With none, no token verifies.
 func SetIdentityPublicKeys(keys ...string) error {
 	parsed, err := parsePublicKeys(keys)
 	if err != nil {
@@ -131,43 +119,7 @@ func SetIdentityPublicKeys(keys ...string) error {
 func ResetIdentityPublicKeys() {
 	identity.mu.Lock()
 	defer identity.mu.Unlock()
-	identity.keys, identity.keysSet, identity.lastFetch, identity.fetchedKey, identity.legacyFetched = nil, false, time.Time{}, false, nil
-}
-
-// SetAcceptLegacyIdentityTokens sets whether HMAC-signed tokens and tokens
-// without an expiry are accepted, instead of
-// LOCALITAS_ACCEPT_LEGACY_IDENTITY_TOKENS or what core reports.
-func SetAcceptLegacyIdentityTokens(accept bool) {
-	identity.mu.Lock()
-	defer identity.mu.Unlock()
-	identity.legacy, identity.legacySet = accept, true
-}
-
-// ResetAcceptLegacyIdentityTokens goes back to the environment, then what
-// core reports, then accepting legacy tokens.
-func ResetAcceptLegacyIdentityTokens() {
-	identity.mu.Lock()
-	defer identity.mu.Unlock()
-	identity.legacySet = false
-}
-
-// SetIdentityKeyFromAPIToken sets the legacy HMAC key identity tokens are
-// verified with to the one core derives from its API token. Apps normally
-// need not call it: the key is derived from LOCALITAS_API_TOKEN, or the
-// token in ~/.localitas/config-core.yaml, on first use.
-func SetIdentityKeyFromAPIToken(apiToken string) {
-	identity.mu.Lock()
-	defer identity.mu.Unlock()
-	identity.hmacKey = deriveIdentityKey(apiToken)
-	identity.hmacDerived = true
-}
-
-func deriveIdentityKey(apiToken string) []byte {
-	if apiToken == "" {
-		return nil
-	}
-	sum := sha256.Sum256([]byte(identityKeyDomain + ":" + apiToken))
-	return []byte(base64.StdEncoding.EncodeToString(sum[:]))
+	identity.keys, identity.keysSet, identity.lastFetch, identity.fetchedKey = nil, false, time.Time{}, false
 }
 
 // systemToken is the API token core gave the app; core's automation calls
@@ -202,14 +154,13 @@ func RequireSystem(handler http.HandlerFunc) http.HandlerFunc {
 }
 
 type identityPublicKeyResponse struct {
-	Alg          string `json:"alg"`
-	KeyID        string `json:"kid"`
-	PublicKey    string `json:"public_key"`
-	AcceptLegacy bool   `json:"accept_legacy"`
+	Alg       string `json:"alg"`
+	KeyID     string `json:"kid"`
+	PublicKey string `json:"public_key"`
 }
 
-// fetchIdentityKey asks core for its identity public key and legacy policy.
-// Called with identity.mu held.
+// fetchIdentityKey asks core for its identity public key. Called with
+// identity.mu held.
 func fetchIdentityKey() {
 	token := systemToken()
 	if token == "" || time.Since(identity.lastFetch) < keyFetchRetry {
@@ -232,8 +183,6 @@ func fetchIdentityKey() {
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&out) != nil {
 		return
 	}
-	accept := out.AcceptLegacy
-	identity.legacyFetched = &accept
 	identity.fetchedKey = true
 	if out.PublicKey == "" {
 		return
@@ -243,9 +192,9 @@ func fetchIdentityKey() {
 	}
 }
 
-// resolveIdentity returns the public keys, legacy policy and HMAC key to
-// verify with, resolving the keys from the environment or core on first use.
-func resolveIdentity() (map[string]ed25519.PublicKey, bool, []byte) {
+// resolveIdentity returns the public keys to verify with, resolving them from
+// the environment or core on first use.
+func resolveIdentity() map[string]ed25519.PublicKey {
 	identity.mu.Lock()
 	defer identity.mu.Unlock()
 	if !identity.keysSet {
@@ -257,21 +206,7 @@ func resolveIdentity() (map[string]ed25519.PublicKey, bool, []byte) {
 			fetchIdentityKey()
 		}
 	}
-	legacy := true
-	switch env := strings.ToLower(os.Getenv("LOCALITAS_ACCEPT_LEGACY_IDENTITY_TOKENS")); {
-	case identity.legacySet:
-		legacy = identity.legacy
-	case env == "false" || env == "0":
-		legacy = false
-	case env == "true" || env == "1":
-		legacy = true
-	case identity.legacyFetched != nil:
-		legacy = *identity.legacyFetched
-	}
-	if !identity.hmacDerived {
-		identity.hmacKey, identity.hmacDerived = deriveIdentityKey(systemToken()), true
-	}
-	return identity.keys, legacy, identity.hmacKey
+	return identity.keys
 }
 
 // ParseBearerToken verifies an identity token core put on a request it
@@ -280,9 +215,9 @@ func resolveIdentity() (map[string]ed25519.PublicKey, bool, []byte) {
 // the app gets in LOCALITAS_IDENTITY_PUBLIC_KEY or from core. Unsigned,
 // tampered and wrong-key tokens are rejected, so a caller cannot claim to be
 // another user; so are tokens expired (beyond two minutes of clock skew) or
-// issued in the future. Legacy tokens — HMAC-signed under the key derived
-// from the API token, or without an expiry — verify only while legacy tokens
-// are accepted.
+// issued in the future. Legacy tokens — signed with anything but an Ed25519
+// key, or without an expiry — are always refused: every app holds the API
+// token the old HMAC key was derived from, so it could forge them.
 func ParseBearerToken(token string) (TokenInfo, error) {
 	payloadB64, sigB64, ok := strings.Cut(token, ".")
 	if !ok || payloadB64 == "" || sigB64 == "" {
@@ -297,38 +232,24 @@ func ParseBearerToken(token string) (TokenInfo, error) {
 		return TokenInfo{}, err
 	}
 
-	keys, legacy, hmacKey := resolveIdentity()
-	if strings.HasPrefix(info.KeyID, ed25519KeyIDPrefix) {
-		pub, known := keys[info.KeyID]
-		if !known {
-			if len(keys) == 0 {
-				return TokenInfo{}, ErrNoIdentityKey
-			}
-			return TokenInfo{}, ErrBadSignature
-		}
-		sig, err := base64.RawURLEncoding.DecodeString(sigB64)
-		if err != nil || !ed25519.Verify(pub, []byte(payloadB64), sig) {
-			return TokenInfo{}, ErrBadSignature
-		}
-	} else {
-		if !legacy {
-			return TokenInfo{}, ErrLegacyToken
-		}
-		if len(hmacKey) == 0 {
+	if !strings.HasPrefix(info.KeyID, ed25519KeyIDPrefix) {
+		return TokenInfo{}, ErrLegacyToken
+	}
+	keys := resolveIdentity()
+	pub, known := keys[info.KeyID]
+	if !known {
+		if len(keys) == 0 {
 			return TokenInfo{}, ErrNoIdentityKey
 		}
-		mac := hmac.New(sha256.New, hmacKey)
-		mac.Write([]byte(payloadB64))
-		if !hmac.Equal([]byte(sigB64), []byte(base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))) {
-			return TokenInfo{}, ErrBadSignature
-		}
+		return TokenInfo{}, ErrBadSignature
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(sigB64)
+	if err != nil || !ed25519.Verify(pub, []byte(payloadB64), sig) {
+		return TokenInfo{}, ErrBadSignature
 	}
 
 	if info.ExpiresAt == 0 {
-		if !legacy {
-			return TokenInfo{}, ErrLegacyToken
-		}
-		return info, nil
+		return TokenInfo{}, ErrLegacyToken
 	}
 	now := identityNow().Unix()
 	switch {

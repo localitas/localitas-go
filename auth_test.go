@@ -10,12 +10,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 )
 
 const testAPIToken = "lt_test_cluster_token"
 
 func TestMain(m *testing.M) {
-	SetIdentityKeyFromAPIToken(testAPIToken)
 	restoreTestIdentity()
 	os.Exit(m.Run())
 }
@@ -27,22 +27,30 @@ func restoreTestIdentity() {
 	if err := SetIdentityPublicKeys(goldenEd25519PublicKey); err != nil {
 		panic(err)
 	}
-	ResetAcceptLegacyIdentityTokens()
 }
 
-// signTestToken signs claims exactly as core does: base64url JSON, a dot,
-// and the base64url HMAC-SHA256 of the payload under the key derived from
-// the cluster API token.
-func signTestToken(apiToken string, info TokenInfo) string {
+// signTestToken signs claims as core does, with the golden Ed25519 key,
+// issued now and valid for five minutes.
+func signTestToken(info TokenInfo) string {
+	now := identityNow()
+	info.IssuedAt, info.ExpiresAt = now.Unix(), now.Add(5*time.Minute).Unix()
+	return signEd25519(goldenSeed(), info)
+}
+
+// signLegacyHMAC signs claims exactly as core signed legacy identity tokens:
+// base64url JSON, a dot, and the base64url HMAC-SHA256 of the payload under
+// base64std(sha256("localitas-internal-token-v1:" + apiToken)).
+func signLegacyHMAC(apiToken string, info TokenInfo) string {
+	sum := sha256.Sum256([]byte("localitas-internal-token-v1:" + apiToken))
+	mac := hmac.New(sha256.New, []byte(base64.StdEncoding.EncodeToString(sum[:])))
 	raw, _ := json.Marshal(info)
 	payload := base64.RawURLEncoding.EncodeToString(raw)
-	mac := hmac.New(sha256.New, deriveIdentityKey(apiToken))
 	mac.Write([]byte(payload))
 	return payload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func TestParseBearerToken_ValidToken(t *testing.T) {
-	encoded := signTestToken(testAPIToken, TokenInfo{UserID: "u123", Email: "alice@example.com", Name: "Alice", Permission: "write"})
+	encoded := signTestToken(TokenInfo{UserID: "u123", Email: "alice@example.com", Name: "Alice", Permission: "write"})
 
 	got, err := ParseBearerToken(encoded)
 	if err != nil {
@@ -66,7 +74,8 @@ func TestParseBearerToken_RejectsForgeries(t *testing.T) {
 	claims, _ := json.Marshal(TokenInfo{UserID: "alice"})
 	for name, token := range map[string]string{
 		"unsigned":  base64.StdEncoding.EncodeToString(claims),
-		"other key": signTestToken("someone-else", TokenInfo{UserID: "alice"}),
+		"other key": signEd25519(make([]byte, 32), TokenInfo{UserID: "alice", ExpiresAt: time.Now().Add(time.Minute).Unix()}),
+		"hmac":      signLegacyHMAC(testAPIToken, TokenInfo{UserID: "alice", ExpiresAt: time.Now().Add(time.Minute).Unix()}),
 		"lt_ token": "lt_abc123",
 	} {
 		if _, err := ParseBearerToken(token); err == nil {
@@ -76,9 +85,11 @@ func TestParseBearerToken_RejectsForgeries(t *testing.T) {
 }
 
 func TestParseBearerToken_NoKeyRejectsEverything(t *testing.T) {
-	SetIdentityKeyFromAPIToken("")
-	t.Cleanup(func() { SetIdentityKeyFromAPIToken(testAPIToken) })
-	if _, err := ParseBearerToken(signTestToken(testAPIToken, TokenInfo{UserID: "alice"})); !errors.Is(err, ErrNoIdentityKey) {
+	if err := SetIdentityPublicKeys(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restoreTestIdentity)
+	if _, err := ParseBearerToken(signTestToken(TokenInfo{UserID: "alice"})); !errors.Is(err, ErrNoIdentityKey) {
 		t.Fatalf("got %v, want ErrNoIdentityKey", err)
 	}
 }
@@ -113,7 +124,7 @@ func TestTokenFromRequest_EmptyHeader(t *testing.T) {
 }
 
 func TestUserIDFromRequest_ValidToken(t *testing.T) {
-	encoded := signTestToken(testAPIToken, TokenInfo{UserID: "user-42", Email: "bob@example.com", Name: "Bob"})
+	encoded := signTestToken(TokenInfo{UserID: "user-42", Email: "bob@example.com", Name: "Bob"})
 
 	req, _ := http.NewRequest("GET", "/test", nil)
 	req.Header.Set("Authorization", "Bearer "+encoded)
@@ -124,19 +135,9 @@ func TestUserIDFromRequest_ValidToken(t *testing.T) {
 	}
 }
 
-// goldenIdentityToken is what core signs for these claims under
-// testAPIToken (core's internal/auth golden test pins the same string).
+// goldenIdentityToken is the legacy HMAC token, without an expiry, core
+// signed for these claims under testAPIToken.
 const goldenIdentityToken = "eyJlbWFpbCI6ImFsaWNlQHRlc3QubG9jYWwiLCJuYW1lIjoiQWxpY2UiLCJ1c2VyX2lkIjoidTEiLCJwZXJtaXNzaW9uIjoid3JpdGUifQ.qpBZu3EVKLK3lKw_8Y2WD_VP9nCqx849D30L0r9fo5Y"
-
-func TestParseBearerToken_VerifiesCoreSignedToken(t *testing.T) {
-	got, err := ParseBearerToken(goldenIdentityToken)
-	if err != nil {
-		t.Fatalf("core's token does not verify: %v", err)
-	}
-	if got.UserID != "u1" || got.Email != "alice@test.local" || got.Name != "Alice" || got.Permission != "write" {
-		t.Fatalf("claims = %+v", got)
-	}
-}
 
 func TestRequireSystem_AdmitsOnlyCoresToken(t *testing.T) {
 	t.Setenv("LOCALITAS_API_TOKEN", testAPIToken)
@@ -146,7 +147,7 @@ func TestRequireSystem_AdmitsOnlyCoresToken(t *testing.T) {
 		want       int
 	}{
 		{"core's token", "Bearer " + testAPIToken, http.StatusOK},
-		{"a user's identity", "Bearer " + signTestToken(testAPIToken, TokenInfo{UserID: "alice", Permission: "admin"}), http.StatusForbidden},
+		{"a user's identity", "Bearer " + signTestToken(TokenInfo{UserID: "alice", Permission: "admin"}), http.StatusForbidden},
 		{"another token", "Bearer lt_someone_else", http.StatusForbidden},
 		{"none", "", http.StatusForbidden},
 	} {

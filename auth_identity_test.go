@@ -46,12 +46,6 @@ func withPublicKeys(t *testing.T, keys ...string) {
 	t.Cleanup(restoreTestIdentity)
 }
 
-func withLegacy(t *testing.T, accept bool) {
-	t.Helper()
-	SetAcceptLegacyIdentityTokens(accept)
-	t.Cleanup(restoreTestIdentity)
-}
-
 // signEd25519 signs info as core does with the Ed25519 key of seed.
 func signEd25519(seed []byte, info TokenInfo) string {
 	priv := ed25519.NewKeyFromSeed(seed)
@@ -108,47 +102,15 @@ func TestParseBearerToken_RejectsAnotherClustersKey(t *testing.T) {
 	}
 }
 
-// An app can compute the legacy HMAC key from the api_token it holds, so
-// HMAC tokens — and tokens without an expiry — stop verifying once legacy
-// tokens are refused.
-func TestParseBearerToken_LegacyTokensOnlyWhileAccepted(t *testing.T) {
-	now := identityT0
-	atTime(t, &now)
-	withPublicKeys(t, goldenEd25519PublicKey)
-	withLegacy(t, true)
-	withExpiry := signTestToken(testAPIToken, freshInfo(now, 5*time.Minute))
-	for name, token := range map[string]string{"unexpiring": goldenIdentityToken, "hmac with exp": withExpiry} {
-		if _, err := ParseBearerToken(token); err != nil {
-			t.Fatalf("%s legacy token while accepted: %v", name, err)
-		}
-	}
-
-	SetAcceptLegacyIdentityTokens(false)
-	for name, token := range map[string]string{"unexpiring": goldenIdentityToken, "hmac with exp": withExpiry} {
-		if _, err := ParseBearerToken(token); !errors.Is(err, ErrLegacyToken) {
-			t.Fatalf("%s legacy token once refused: got %v, want ErrLegacyToken", name, err)
-		}
-	}
-	if _, err := ParseBearerToken(goldenEd25519Token); err != nil {
-		t.Fatalf("core's Ed25519 token: %v", err)
-	}
-}
-
-func TestParseBearerToken_PublicKeyAndPolicyFromEnvironment(t *testing.T) {
+func TestParseBearerToken_PublicKeyFromEnvironment(t *testing.T) {
 	now := identityT0
 	atTime(t, &now)
 	t.Setenv("LOCALITAS_IDENTITY_PUBLIC_KEY", goldenEd25519PublicKey)
-	t.Setenv("LOCALITAS_ACCEPT_LEGACY_IDENTITY_TOKENS", "false")
 	ResetIdentityPublicKeys()
-	ResetAcceptLegacyIdentityTokens()
-	t.Cleanup(restoreTestIdentity)
 	t.Cleanup(restoreTestIdentity)
 
 	if _, err := ParseBearerToken(goldenEd25519Token); err != nil {
 		t.Fatalf("token under the environment's key: %v", err)
-	}
-	if _, err := ParseBearerToken(goldenIdentityToken); !errors.Is(err, ErrLegacyToken) {
-		t.Fatalf("legacy token with LOCALITAS_ACCEPT_LEGACY_IDENTITY_TOKENS=false: got %v", err)
 	}
 }
 
@@ -164,16 +126,13 @@ func TestParseBearerToken_FetchesThePublicKeyFromCore(t *testing.T) {
 			return
 		}
 		asked = r.Header.Get("Authorization")
-		json.NewEncoder(w).Encode(map[string]any{"alg": "EdDSA", "public_key": goldenEd25519PublicKey, "accept_legacy": false})
+		json.NewEncoder(w).Encode(identityPublicKeyResponse{Alg: "EdDSA", PublicKey: goldenEd25519PublicKey})
 	}))
 	defer core.Close()
 	t.Setenv("LOCALITAS_IDENTITY_PUBLIC_KEY", "")
-	t.Setenv("LOCALITAS_ACCEPT_LEGACY_IDENTITY_TOKENS", "")
 	t.Setenv("CORE_URL", core.URL)
 	t.Setenv("LOCALITAS_API_TOKEN", testAPIToken)
 	ResetIdentityPublicKeys()
-	ResetAcceptLegacyIdentityTokens()
-	t.Cleanup(restoreTestIdentity)
 	t.Cleanup(restoreTestIdentity)
 
 	if _, err := ParseBearerToken(goldenEd25519Token); err != nil {
@@ -182,8 +141,53 @@ func TestParseBearerToken_FetchesThePublicKeyFromCore(t *testing.T) {
 	if asked != "Bearer "+testAPIToken {
 		t.Fatalf("asked core with %q, want the api_token", asked)
 	}
-	if _, err := ParseBearerToken(goldenIdentityToken); !errors.Is(err, ErrLegacyToken) {
-		t.Fatalf("legacy token after core said accept_legacy=false: got %v", err)
+}
+
+// Every app holds the api_token, so it could sign an HMAC identity token as
+// any user: such tokens are refused whatever the environment or core's
+// public-key endpoint says.
+func TestParseBearerToken_RefusesHMACTokensEvenWhenLegacyIsAskedFor(t *testing.T) {
+	now := identityT0
+	atTime(t, &now)
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/auth/identity/public-key" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"alg":"EdDSA","public_key":"` + goldenEd25519PublicKey + `","accept_legacy":true}`))
+	}))
+	defer core.Close()
+	t.Setenv("LOCALITAS_IDENTITY_PUBLIC_KEY", "")
+	t.Setenv("LOCALITAS_ACCEPT_LEGACY_IDENTITY_TOKENS", "true")
+	t.Setenv("CORE_URL", core.URL)
+	t.Setenv("LOCALITAS_API_TOKEN", testAPIToken)
+	ResetIdentityPublicKeys()
+	t.Cleanup(restoreTestIdentity)
+
+	if _, err := ParseBearerToken(goldenEd25519Token); err != nil {
+		t.Fatalf("token under the key core serves: %v", err)
+	}
+	for name, token := range map[string]string{
+		"core's legacy golden, no exp": goldenIdentityToken,
+		"hmac with exp":                signLegacyHMAC(testAPIToken, freshInfo(now, 5*time.Minute)),
+		"hmac admin with exp":          signLegacyHMAC(testAPIToken, TokenInfo{UserID: "root", Permission: "admin", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(), KeyID: "hmac"}),
+	} {
+		if _, err := ParseBearerToken(token); !errors.Is(err, ErrLegacyToken) {
+			t.Fatalf("%s: got %v, want ErrLegacyToken", name, err)
+		}
+	}
+}
+
+func TestParseBearerToken_RefusesTokensWithoutExpiry(t *testing.T) {
+	now := identityT0
+	atTime(t, &now)
+	withPublicKeys(t, goldenEd25519PublicKey)
+	t.Setenv("LOCALITAS_ACCEPT_LEGACY_IDENTITY_TOKENS", "true")
+	info := freshInfo(now, 5*time.Minute)
+	info.ExpiresAt = 0
+	if _, err := ParseBearerToken(signEd25519(goldenSeed(), info)); !errors.Is(err, ErrLegacyToken) {
+		t.Fatalf("Ed25519 token without exp: got %v, want ErrLegacyToken", err)
 	}
 }
 
