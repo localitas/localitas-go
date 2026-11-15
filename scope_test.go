@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestScopeRank(t *testing.T) {
@@ -69,7 +70,7 @@ func TestGetScope_DefaultsToGuestForAnonymous(t *testing.T) {
 }
 
 func makeToken(userID, email, permission string) string {
-	return signTestToken(testAPIToken, TokenInfo{UserID: userID, Email: email, Permission: permission})
+	return signTestToken(TokenInfo{UserID: userID, Email: email, Permission: permission})
 }
 
 func TestAuthMiddleware_SetsScope(t *testing.T) {
@@ -104,7 +105,8 @@ func TestAuthMiddleware_RejectsForgedTokens(t *testing.T) {
 	tampered := base64.RawURLEncoding.EncodeToString(claims) + "." + sig
 	for name, token := range map[string]string{
 		"unsigned base64 claims": base64.StdEncoding.EncodeToString(claims),
-		"other key":              signTestToken("another-cluster", TokenInfo{UserID: "alice", Permission: "admin"}),
+		"other key":              signEd25519(make([]byte, 32), TokenInfo{UserID: "alice", Permission: "admin", ExpiresAt: time.Now().Add(time.Minute).Unix()}),
+		"hmac":                   signLegacyHMAC(testAPIToken, TokenInfo{UserID: "alice", Permission: "admin", ExpiresAt: time.Now().Add(time.Minute).Unix()}),
 		"edited claims":          tampered,
 		"signature only":         "." + sig,
 		"payload only":           payload,
