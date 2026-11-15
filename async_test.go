@@ -12,10 +12,16 @@ import (
 )
 
 type publishedCompletion struct {
-	Path   string                 `json:"-"`
-	Status string                 `json:"status"`
-	Result map[string]interface{} `json:"result"`
-	Error  string                 `json:"error"`
+	Path   string          `json:"-"`
+	Status string          `json:"status"`
+	Result json.RawMessage `json:"result"`
+	Error  string          `json:"error"`
+}
+
+// scanSummary stands for an app's own result type.
+type scanSummary struct {
+	Processed int    `json:"processed"`
+	Label     string `json:"label"`
 }
 
 // completionServer records each completion it accepts. statuses lists the
@@ -54,12 +60,12 @@ func waitCompletion(t *testing.T, got <-chan publishedCompletion) publishedCompl
 	}
 }
 
-func startAsync(t *testing.T, c *Client, runID string, work AsyncWorkFunc) {
+func startAsync[T any](t *testing.T, c *Client, runID string, work func(ctx context.Context) (T, error)) {
 	t.Helper()
 	req := httptest.NewRequest("POST", "/test", nil)
 	req.Header.Set(AutomationRunIDHeader, runID)
 	w := httptest.NewRecorder()
-	if !c.RunAsync(w, req, work) {
+	if !RunAsync(c, w, req, work) {
 		t.Fatal("expected RunAsync to handle the request")
 	}
 	if w.Code != http.StatusAccepted {
@@ -71,18 +77,20 @@ func startAsync(t *testing.T, c *Client, runID string, work AsyncWorkFunc) {
 	}
 }
 
-func TestRunAsync_WithRunID_PublishesCompletion(t *testing.T) {
+// The work's own result type is what the run records, exactly: no field is
+// added (core times the run itself).
+func TestRunAsync_PublishesTheWorksTypedResult(t *testing.T) {
 	c, got, _ := completionServer(t)
-	startAsync(t, c, "run-123", func(ctx context.Context) (map[string]interface{}, error) {
-		return map[string]interface{}{"processed": float64(42)}, nil
+	startAsync(t, c, "run-123", func(ctx context.Context) (scanSummary, error) {
+		return scanSummary{Processed: 42, Label: "typed"}, nil
 	})
 
 	p := waitCompletion(t, got)
-	if p.Path != "/apps/automation/api/runs/run-123/complete" || p.Status != "completed" || p.Result["processed"] != float64(42) {
+	if p.Path != "/apps/automation/api/runs/run-123/complete" || p.Status != "completed" {
 		t.Fatalf("completion = %+v", p)
 	}
-	if _, ok := p.Result["duration_ms"]; !ok {
-		t.Fatalf("completion result lacks duration_ms: %+v", p.Result)
+	if string(p.Result) != `{"processed":42,"label":"typed"}` {
+		t.Fatalf("published result %s, want the work's result as it encodes", p.Result)
 	}
 }
 
@@ -90,7 +98,7 @@ func TestRunAsync_WithoutRunID_ReturnsFalse(t *testing.T) {
 	c, _, calls := completionServer(t)
 	req := httptest.NewRequest("POST", "/test", nil)
 	w := httptest.NewRecorder()
-	if c.RunAsync(w, req, func(ctx context.Context) (map[string]interface{}, error) { return nil, nil }) {
+	if RunAsync(c, w, req, func(ctx context.Context) (scanSummary, error) { return scanSummary{}, nil }) {
 		t.Fatal("expected RunAsync to not handle request without run ID header")
 	}
 	if calls.Load() != 0 {
@@ -100,13 +108,16 @@ func TestRunAsync_WithoutRunID_ReturnsFalse(t *testing.T) {
 
 func TestRunAsync_WorkErrorPublishesFailure(t *testing.T) {
 	c, got, _ := completionServer(t)
-	startAsync(t, c, "run-fail", func(ctx context.Context) (map[string]interface{}, error) {
-		return nil, fmt.Errorf("something broke")
+	startAsync(t, c, "run-fail", func(ctx context.Context) (scanSummary, error) {
+		return scanSummary{Processed: 1}, fmt.Errorf("something broke")
 	})
 
 	p := waitCompletion(t, got)
 	if p.Status != "failed" || p.Error != "something broke" {
 		t.Fatalf("completion = %+v, want failed with the work's error", p)
+	}
+	if len(p.Result) != 0 && string(p.Result) != "null" {
+		t.Fatalf("a failed run published a result: %s", p.Result)
 	}
 }
 
@@ -114,7 +125,7 @@ func TestRunAsync_WorkErrorPublishesFailure(t *testing.T) {
 // it must become the run's failure instead.
 func TestRunAsync_PanicBecomesFailure(t *testing.T) {
 	c, got, _ := completionServer(t)
-	startAsync(t, c, "run-panic", func(ctx context.Context) (map[string]interface{}, error) {
+	startAsync(t, c, "run-panic", func(ctx context.Context) (scanSummary, error) {
 		panic("boom")
 	})
 
@@ -128,8 +139,8 @@ func TestRunAsync_PanicBecomesFailure(t *testing.T) {
 // unavailable while leadership moves) is retried until it lands.
 func TestRunAsync_RetriesFailedPublish(t *testing.T) {
 	c, got, calls := completionServer(t, http.StatusServiceUnavailable, http.StatusBadGateway)
-	startAsync(t, c, "run-retry", func(ctx context.Context) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	startAsync(t, c, "run-retry", func(ctx context.Context) (scanSummary, error) {
+		return scanSummary{}, nil
 	})
 
 	p := waitCompletion(t, got)
@@ -144,8 +155,8 @@ func TestRunAsync_RetriesFailedPublish(t *testing.T) {
 // A publish the server refuses (the run does not exist) is not retried.
 func TestRunAsync_DoesNotRetryRefusedPublish(t *testing.T) {
 	c, _, calls := completionServer(t, http.StatusNotFound, http.StatusNotFound)
-	startAsync(t, c, "run-gone", func(ctx context.Context) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	startAsync(t, c, "run-gone", func(ctx context.Context) (scanSummary, error) {
+		return scanSummary{}, nil
 	})
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -165,7 +176,7 @@ func TestPublishCompletion_GivesUpAfterLimitedAttempts(t *testing.T) {
 	}
 	c, _, calls := completionServer(t, statuses...)
 	start := time.Now()
-	c.publishCompletion("run-down", "completed", map[string]interface{}{}, "")
+	c.publishCompletion("run-down", "completed", scanSummary{}, "")
 	if n := calls.Load(); n != publishAttempts {
 		t.Fatalf("publish attempts = %d, want %d", n, publishAttempts)
 	}

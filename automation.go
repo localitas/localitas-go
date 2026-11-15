@@ -152,16 +152,21 @@ func (a *AutomationClient) GetRun(ctx context.Context, runID string) (*Automatio
 	return &run, nil
 }
 
-func (a *AutomationClient) PublishResult(ctx context.Context, runID string, status string, result map[string]interface{}, errMsg string) error {
+// runOutcome is what a run's completion carries.
+type runOutcome struct {
+	Status string `json:"status"`
+	Result any    `json:"result,omitempty"`
+	Error  string `json:"error"`
+}
+
+// PublishResult completes a run with status ("completed" when empty), the
+// work's result (a value that encodes to a JSON object, such as a struct, or
+// nil) and, for a failure, its error.
+func (a *AutomationClient) PublishResult(ctx context.Context, runID string, status string, result any, errMsg string) error {
 	if status == "" {
 		status = "completed"
 	}
-	payload := map[string]interface{}{
-		"status": status,
-		"result": result,
-		"error":  errMsg,
-	}
-	return a.client.do(ctx, "POST", fmt.Sprintf("/apps/automation/api/runs/%s/complete", runID), payload, nil)
+	return a.client.do(ctx, "POST", fmt.Sprintf("/apps/automation/api/runs/%s/complete", runID), runOutcome{Status: status, Result: result, Error: errMsg}, nil)
 }
 
 // The automations cache and the channel every finished run is announced on.
