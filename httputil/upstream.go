@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
+	"strings"
 	"time"
 )
 
@@ -68,10 +70,39 @@ func (c cancelOnClose) Close() error {
 // asked of the app; a handler answers it with 502 Bad Gateway.
 type UpstreamError struct {
 	Service string
-	Err     error
+	// Err is the last try's failure, or the caller's own context error when
+	// the caller gave up first.
+	Err error
+	// Tries is how far each try got, in order; Error lists them.
+	Tries []UpstreamTry
+	// callerDone is set when the caller's context ended the asking.
+	callerDone bool
 }
 
-func (e *UpstreamError) Error() string { return e.Service + ": " + e.Err.Error() }
+// Error names the service and, when tries were made, how far each got:
+//
+//	Open-Meteo: 3 tries failed: #1 reused idle conn (idle 41s) to
+//	51.81.167.44:443, request written, no response in 10s; #2 new conn:
+//	dns 12ms, connect 40ms to 51.81.167.44:443, tls stalled after 10s; ...
+func (e *UpstreamError) Error() string {
+	if len(e.Tries) == 0 {
+		return e.Service + ": " + e.Err.Error()
+	}
+	tries := "1 try"
+	if len(e.Tries) > 1 {
+		tries = fmt.Sprintf("%d tries", len(e.Tries))
+	}
+	head := tries + " failed"
+	if e.callerDone {
+		head = e.Err.Error() + " after " + tries
+	}
+	parts := make([]string, len(e.Tries))
+	for i, t := range e.Tries {
+		parts[i] = fmt.Sprintf("#%d %s", i+1, t)
+	}
+	return e.Service + ": " + head + ": " + strings.Join(parts, "; ")
+}
+
 func (e *UpstreamError) Unwrap() error { return e.Err }
 
 // Get GETs u from service. A network error or a 5xx is tried again; a
@@ -90,17 +121,22 @@ func (up Upstream) Get(ctx context.Context, service, u string) (*http.Response, 
 	if delay <= 0 {
 		delay = 500 * time.Millisecond
 	}
-	var last error
+	fail := &UpstreamError{Service: service}
+	callerDone := func() error {
+		fail.Err, fail.callerDone = ctx.Err(), true
+		return fail
+	}
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, &UpstreamError{Service: service, Err: ctx.Err()}
+				return nil, callerDone()
 			case <-time.After(delay * time.Duration(attempt)):
 			}
 		}
 		tryCtx, cancel := context.WithTimeout(ctx, up.attemptTimeout())
-		req, err := http.NewRequestWithContext(tryCtx, http.MethodGet, u, nil)
+		tr := newTryTracer()
+		req, err := http.NewRequestWithContext(httptrace.WithClientTrace(tryCtx, tr.clientTrace()), http.MethodGet, u, nil)
 		if err != nil {
 			cancel()
 			return nil, err
@@ -111,20 +147,22 @@ func (up Upstream) Get(ctx context.Context, service, u string) (*http.Response, 
 		resp, err := client.Do(req)
 		if err != nil {
 			cancel()
+			fail.Tries = append(fail.Tries, tr.finish(err, 0))
 			if ctx.Err() != nil {
-				return nil, &UpstreamError{Service: service, Err: ctx.Err()}
+				return nil, callerDone()
 			}
-			last = err
+			fail.Err = err
 			continue
 		}
 		if resp.StatusCode >= http.StatusInternalServerError {
 			resp.Body.Close()
 			cancel()
-			last = fmt.Errorf("returned %d", resp.StatusCode)
+			fail.Err = fmt.Errorf("returned %d", resp.StatusCode)
+			fail.Tries = append(fail.Tries, tr.finish(fail.Err, resp.StatusCode))
 			continue
 		}
 		resp.Body = cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 		return resp, nil
 	}
-	return nil, &UpstreamError{Service: service, Err: last}
+	return nil, fail
 }
