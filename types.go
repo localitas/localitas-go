@@ -89,12 +89,6 @@ type SearchRowsResponse struct {
 	Total int64                    `json:"total"`
 }
 
-// ServiceEntry represents a registered service in the platform's service registry.
-type ServiceEntry struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
-}
-
 // SQLStatement represents a single SQL statement with optional bind arguments,
 // used in SQLTransaction for atomic multi-statement execution.
 type SQLStatement struct {
