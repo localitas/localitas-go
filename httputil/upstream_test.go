@@ -155,6 +155,34 @@ func TestUpstream_ACancelledRequestStopsAsking(t *testing.T) {
 	}
 }
 
+// The headers set are sent with every try, the user agent over any in them.
+func TestUpstream_SendsItsHeaders(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
+		w.Write([]byte(r.Header.Get("Accept") + "|" + r.Header.Get("Cookie") + "|" + r.UserAgent()))
+	}))
+	defer srv.Close()
+
+	up := quick
+	up.Header = http.Header{"Accept": {"text/html"}, "Cookie": {"A=1"}, "User-Agent": {"other"}}
+	resp, err := up.Get(context.Background(), "search", srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if string(b) != "text/html|A=1|Localitas Test/1.0" || calls.Load() != 2 {
+		t.Errorf("headers sent = %q after %d tries", b, calls.Load())
+	}
+	if up.Header.Get("User-Agent") != "other" {
+		t.Errorf("Get changed the caller's headers: %v", up.Header)
+	}
+}
+
 // The user agent set is sent.
 func TestUpstream_SendsTheUserAgent(t *testing.T) {
 	srv, _ := flaky(t, 0, 0)
