@@ -26,6 +26,10 @@ type AutomationRun struct {
 	DurationMs   int64                  `json:"duration_ms,omitempty"`
 	Error        string                 `json:"error,omitempty"`
 	Result       map[string]interface{} `json:"result,omitempty"`
+	// CompletionChannel is the automations cache channel core announces
+	// this run's completion on: its owner's own channel, which only they
+	// read. Empty from a core that announces every run on "completions".
+	CompletionChannel string `json:"completion_channel,omitempty"`
 }
 
 type Automation struct {
@@ -169,11 +173,20 @@ func (a *AutomationClient) PublishResult(ctx context.Context, runID string, stat
 	return a.client.do(ctx, "POST", fmt.Sprintf("/apps/automation/api/runs/%s/complete", runID), runOutcome{Status: status, Result: result, Error: errMsg}, nil)
 }
 
-// The automations cache and the channel every finished run is announced on.
+// The automations cache, and the channel a core that predates per-owner
+// completion channels announces every finished run on.
 const (
 	automationsCache   = "localitas_automations"
 	completionsChannel = "completions"
 )
+
+// completionChannel is where run's completion is announced.
+func completionChannel(run *AutomationRun) string {
+	if run.CompletionChannel != "" {
+		return run.CompletionChannel
+	}
+	return completionsChannel
+}
 
 // WaitOpts bounds WaitForRun.
 type WaitOpts struct {
@@ -188,13 +201,15 @@ func runFinished(run *AutomationRun) bool {
 
 // WaitForRun returns the run once it has finished, without polling it.
 //
-// Every finished run is announced once on the completions channel, after
-// its outcome is recorded. WaitForRun notes the channel's last message,
-// then reads the run; the read is linearizable, so a run whose completion
-// is at or before the noted message is read finished. A run still going is
-// waited for by watching the channel after the noted message: its
-// completion comes after it, so it cannot be missed. A run that does not
-// exist is the read's 404.
+// Every finished run is announced once, after its outcome is recorded, on
+// the channel its first read names (its owner's own completions channel;
+// only the owner can read the run, so the caller is the owner). WaitForRun
+// reads the run to learn the channel, notes the channel's last message,
+// then reads the run again; the read is linearizable, so a run whose
+// completion is at or before the noted message is read finished. A run
+// still going is waited for by watching the channel after the noted
+// message: its completion comes after it, so it cannot be missed. A run
+// that does not exist, or is not the caller's, is the read's error.
 func (a *AutomationClient) WaitForRun(ctx context.Context, runID string, opts ...WaitOpts) (*AutomationRun, error) {
 	timeout := time.Hour
 	if len(opts) > 0 && opts[0].Timeout > 0 {
@@ -203,12 +218,19 @@ func (a *AutomationClient) WaitForRun(ctx context.Context, runID string, opts ..
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	noted, err := a.client.Cache(automationsCache).PubSub(completionsChannel, PubSubOpts{}).LastSeq(ctx)
+	run, err := a.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if runFinished(run) {
+		return run, nil
+	}
+	channel := completionChannel(run)
+	noted, err := a.client.Cache(automationsCache).PubSub(channel, PubSubOpts{}).LastSeq(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("note the completions channel: %w", err)
 	}
-	run, err := a.GetRun(ctx, runID)
-	if err != nil {
+	if run, err = a.GetRun(ctx, runID); err != nil {
 		return nil, err
 	}
 	if runFinished(run) {
@@ -218,7 +240,7 @@ func (a *AutomationClient) WaitForRun(ctx context.Context, runID string, opts ..
 	ps := NewPubSubWS("ws"+strings.TrimPrefix(a.client.baseURL, "http")+"/apps/cache/ws/"+automationsCache, a.client.bearer(ctx))
 	defer ps.Close()
 	finished := make(chan struct{}, 1)
-	ps.Watch(completionsChannel, noted, func(msg PubSubMessage) {
+	ps.Watch(channel, noted, func(msg PubSubMessage) {
 		var announced struct {
 			RunID string `json:"run_id"`
 		}
