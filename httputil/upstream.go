@@ -17,8 +17,10 @@ type Upstream struct {
 	// Client sends the requests; nil is a client whose idle HTTP/2
 	// connections are checked with pings (upstreamClient).
 	Client *http.Client
-	// UserAgent is sent with each request when set.
+	// UserAgent is sent with each request when set, over any in Header.
 	UserAgent string
+	// Header is sent with each request, such as an Accept or a Cookie.
+	Header http.Header
 	// Attempts is how many times a request is tried; 0 is 3.
 	Attempts int
 	// Delay is the pause before the second try, and each later try waits
@@ -140,6 +142,9 @@ func (up Upstream) Get(ctx context.Context, service, u string) (*http.Response, 
 		if err != nil {
 			cancel()
 			return nil, err
+		}
+		if up.Header != nil {
+			req.Header = up.Header.Clone()
 		}
 		if up.UserAgent != "" {
 			req.Header.Set("User-Agent", up.UserAgent)
