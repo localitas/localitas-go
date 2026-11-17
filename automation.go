@@ -38,6 +38,8 @@ type Automation struct {
 	Description string `json:"description,omitempty"`
 	TriggerType string `json:"trigger_type,omitempty"`
 	IsEnabled   bool   `json:"is_enabled,omitempty"`
+	// NodeID is the node a local_only automation runs on.
+	NodeID string `json:"node_id,omitempty"`
 }
 
 // Where a node runs.
@@ -48,7 +50,10 @@ const (
 	StrategyAnyNode = "any_node"
 	// StrategyAllNodes runs the node on every node, for per-node work.
 	StrategyAllNodes = "all_nodes"
-	// StrategyLocalOnly runs the node on every node, each calling its own.
+	// StrategyLocalOnly runs the node only on the node the automation names
+	// (CreateAutomationRequest.NodeID), which calls its own: work on that
+	// node's data, such as a folder on its disk. A cron job names no node,
+	// so it cannot be local_only.
 	StrategyLocalOnly = "local_only"
 )
 
@@ -118,6 +123,10 @@ type CreateAutomationRequest struct {
 	TriggerType   string        `json:"trigger_type"`
 	TriggerConfig TriggerConfig `json:"trigger_config"`
 	IsEnabled     bool          `json:"is_enabled"`
+	// NodeID is the node a local_only automation runs on, the one holding
+	// the data it works on; core refuses a local_only automation without
+	// one, and a node for one with no local_only step.
+	NodeID string `json:"node_id,omitempty"`
 }
 
 func (a *AutomationClient) List(ctx context.Context) ([]Automation, error) {

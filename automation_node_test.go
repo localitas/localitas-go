@@ -2,8 +2,49 @@ package client
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+// A local_only automation names the node it runs on: Create sends it, and
+// the automation core returns says it. One naming no node sends none.
+func TestCreate_ALocalOnlyAutomationNamesItsNode(t *testing.T) {
+	var sent []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		sent = append(sent, string(b))
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":"auto_1","name":"scan","node_id":"node-2"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+	c := New(srv.URL).WithToken("t")
+
+	scan := HTTPNode("scan", StrategyLocalOnly, HTTPNodeSettings{URL: "/apps/filesystem/api/ops/index-local"})
+	got, err := c.Automation().Create(t.Context(), CreateAutomationRequest{Name: "scan", DAGConfig: DAGConfig{Nodes: []DAGNode{scan}}, TriggerType: "manual", NodeID: "node-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sent[0], `"node_id":"node-2"`) {
+		t.Fatalf("Create sent %s, want the node", sent[0])
+	}
+	if got.NodeID != "node-2" {
+		t.Fatalf("the created automation runs on %q, want node-2", got.NodeID)
+	}
+
+	every := HTTPNode("prune", StrategyAllNodes, HTTPNodeSettings{URL: "/apps/x/api/prune"})
+	if _, err := c.Automation().Create(t.Context(), CreateAutomationRequest{Name: "prune", DAGConfig: DAGConfig{Nodes: []DAGNode{every}}, TriggerType: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	var top struct {
+		NodeID *string `json:"node_id"`
+	}
+	if err := json.Unmarshal([]byte(sent[1]), &top); err != nil || top.NodeID != nil {
+		t.Fatalf("an automation naming no node sent %s", sent[1])
+	}
+}
 
 // An http-api node's metadata is the settings as core reads them: unset
 // fields are left out (core's defaults), an explicit 0 retries is kept,
