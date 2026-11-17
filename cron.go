@@ -16,18 +16,21 @@ type CronSpec struct {
 // core's defaults (method POST, timeout 30s, 3 attempts with exponential
 // backoff, no notification).
 type CronJob struct {
-	ID                string            `json:"id"`
-	Path              string            `json:"path"`
-	Schedule          string            `json:"schedule"`
-	Description       string            `json:"description,omitempty"`
-	Method            string            `json:"method,omitempty"`
-	Headers           map[string]string `json:"headers,omitempty"`
-	Body              json.RawMessage   `json:"body,omitempty"`
-	Timeout           string            `json:"timeout,omitempty"`
-	Retry             *CronRetry        `json:"retry,omitempty"`
-	Auth              *CronAuth         `json:"auth,omitempty"`
-	NotifyLevel       string            `json:"notify_level,omitempty"`
-	ExecutionStrategy string            `json:"execution_strategy,omitempty"`
+	ID          string            `json:"id"`
+	Path        string            `json:"path"`
+	Schedule    string            `json:"schedule"`
+	Description string            `json:"description,omitempty"`
+	Method      string            `json:"method,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Body        json.RawMessage   `json:"body,omitempty"`
+	Timeout     string            `json:"timeout,omitempty"`
+	Retry       *CronRetry        `json:"retry,omitempty"`
+	Auth        *CronAuth         `json:"auth,omitempty"`
+	NotifyLevel string            `json:"notify_level,omitempty"`
+	// ExecutionStrategy is where the job runs: StrategyRaftLeader (the
+	// default), StrategyAnyNode or StrategyAllNodes. A cron job names no
+	// node, so core refuses StrategyLocalOnly.
+	ExecutionStrategy string `json:"execution_strategy,omitempty"`
 }
 
 type CronRetry struct {
