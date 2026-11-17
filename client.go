@@ -131,12 +131,33 @@ type bearerToken struct {
 	value string
 }
 
+// requestTimeout bounds a call that reads a whole answer (Do and the calls
+// built on it) when its context has no deadline of its own. Core's own
+// write timeouts are at most a few minutes, so a call past this one is a
+// core that will not answer.
+var requestTimeout = 5 * time.Minute
+
+// responseHeaderTimeout bounds how long any call, a streaming download or
+// upload included, waits for core to start answering once the request is
+// sent. A body that is arriving is never cut by it.
+const responseHeaderTimeout = 5 * time.Minute
+
+// defaultHTTPClient is the pooled client every Client shares unless given
+// its own with WithHTTPClient.
+var defaultHTTPClient = newDefaultHTTPClient(responseHeaderTimeout)
+
+func newDefaultHTTPClient(headerTimeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = headerTimeout
+	return &http.Client{Transport: transport}
+}
+
 // New creates a Client bound to the given base URL (e.g. "http://localhost:8090").
 // The returned client has no token set — call WithToken before making authenticated requests.
 func New(baseURL string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    http.DefaultClient,
+		http:    defaultHTTPClient,
 	}
 }
 
@@ -183,6 +204,8 @@ type identityTokenResponse struct {
 }
 
 func (c *Client) refreshIdentity(ctx context.Context, token string) (string, error) {
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/auth/identity/refresh", nil)
 	if err != nil {
 		return "", err
@@ -771,6 +794,8 @@ func (c *Client) VaultImport1Password(ctx context.Context, filename string, data
 		return nil, err
 	}
 
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/apps/vault/api/import/1password", &body)
 	if err != nil {
 		return nil, err
@@ -863,13 +888,16 @@ func (c *Client) Do(ctx context.Context, method, path string, body any, out any)
 
 // Send makes an authenticated call with a raw body of contentType, such as a
 // file's bytes, streamed as it is read, and JSON-decodes the response into
-// out if non-nil.
+// out if non-nil. A long upload is bounded only by ctx; core must start
+// answering within responseHeaderTimeout of the body's end.
 func (c *Client) Send(ctx context.Context, method, path, contentType string, body io.Reader, out any) error {
 	return c.send(ctx, method, path, contentType, body, out)
 }
 
 // Download streams the response body of an authenticated GET to w, for
 // endpoints that return files rather than JSON. It returns the bytes written.
+// A long body is bounded only by ctx; core must start answering within
+// responseHeaderTimeout.
 func (c *Client) Download(ctx context.Context, path string, w io.Writer) (int64, error) {
 	if c == nil {
 		return 0, fmt.Errorf("localitas client is nil: GET %s", path)
@@ -893,7 +921,18 @@ func (c *Client) Download(ctx context.Context, path string, w io.Writer) (int64,
 	return io.Copy(w, resp.Body)
 }
 
+// bounded is ctx, limited to requestTimeout when it has no deadline of its
+// own.
+func bounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, requestTimeout)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	if body == nil {
 		return c.send(ctx, method, path, "", nil, out)
 	}

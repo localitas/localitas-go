@@ -174,7 +174,7 @@ func fetchIdentityKey() {
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
 		return
 	}
