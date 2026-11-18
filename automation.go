@@ -203,9 +203,10 @@ type WaitOpts struct {
 	Timeout time.Duration
 }
 
-// runFinished reports whether a run has its outcome.
+// runFinished reports whether a run has its outcome: completed or failed. A
+// run queued, running or up_for_retry (waiting to be tried again) has not.
 func runFinished(run *AutomationRun) bool {
-	return run.Status != "running" && run.Status != "pending"
+	return run.Status == "completed" || run.Status == "failed"
 }
 
 // WaitForRun returns the run once it has finished, without polling it.
