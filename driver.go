@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -81,14 +82,41 @@ func (c *localitasConn) Close() error {
 }
 
 func (c *localitasConn) Begin() (driver.Tx, error) {
+	return c.BeginTx(context.Background(), driver.TxOptions{})
+}
+
+// BeginTx starts a transaction whose statements are sent together on
+// Commit, under the precondition WithUnlessExists put on ctx, if any.
+func (c *localitasConn) BeginTx(ctx context.Context, _ driver.TxOptions) (driver.Tx, error) {
 	tx := &localitasTx{conn: c}
+	if u, ok := ctx.Value(unlessExistsKey{}).(SQLStatement); ok {
+		tx.unlessExists = &u
+	}
 	c.activeTx = tx
 	return tx, nil
 }
 
+// ErrSkipped is what Commit returns for a transaction begun under
+// WithUnlessExists whose query found a row: nothing was applied, and nothing
+// failed.
+var ErrSkipped = errors.New("transaction skipped: its unless-exists query found a row")
+
+type unlessExistsKey struct{}
+
+// WithUnlessExists returns a context under which a transaction begun on a
+// localitas connection (db.BeginTx) applies only unless query returns a
+// row. Core evaluates the query inside the replicated transaction on every
+// node, so of nodes committing the same conditional transaction at once
+// exactly one applies it; the others' Commit returns ErrSkipped. Drivers
+// other than localitas ignore it.
+func WithUnlessExists(ctx context.Context, query string, args ...any) context.Context {
+	return context.WithValue(ctx, unlessExistsKey{}, SQLStatement{SQL: query, Args: args})
+}
+
 type localitasTx struct {
-	conn  *localitasConn
-	stmts []SQLStatement
+	conn         *localitasConn
+	stmts        []SQLStatement
+	unlessExists *SQLStatement
 }
 
 func (tx *localitasTx) buffer(sql string, args []interface{}) {
@@ -100,9 +128,20 @@ func (tx *localitasTx) Commit() error {
 	if len(tx.stmts) == 0 {
 		return nil
 	}
-	_, err := tx.conn.client.SQLTransaction(context.Background(), tx.conn.dbID, tx.stmts)
+	stmts := tx.stmts
 	tx.stmts = nil
-	return err
+	if tx.unlessExists == nil {
+		_, err := tx.conn.client.SQLTransaction(context.Background(), tx.conn.dbID, stmts)
+		return err
+	}
+	res, err := tx.conn.client.SQLTransactionUnlessExists(context.Background(), tx.conn.dbID, *tx.unlessExists, stmts)
+	if err != nil {
+		return err
+	}
+	if res.Skipped {
+		return ErrSkipped
+	}
+	return nil
 }
 
 func (tx *localitasTx) Rollback() error {

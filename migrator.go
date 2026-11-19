@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -56,8 +57,12 @@ func NewMigrator(db *sql.DB, migrationsFS fs.FS, appName string) (*Migrator, err
 // Run applies every pending migration. Each migration is one transaction
 // that records its version before running its statements, so it applies
 // whole or not at all, and of several nodes migrating the same database at
-// once exactly one applies it: the others' transactions fail on the
-// version's primary key and change nothing.
+// once exactly one applies it. On the localitas driver the transaction is
+// conditional on its version not being recorded yet (WithUnlessExists): the
+// others' transactions are skipped, which leaves no failed write in core's
+// replicated log. On other drivers, and on a core without conditional
+// transactions, the others' transactions fail on the version's primary key
+// and change nothing.
 func (m *Migrator) Run(ctx context.Context) error {
 	if _, err := m.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -82,7 +87,7 @@ func (m *Migrator) Run(ctx context.Context) error {
 		switch {
 		case err == nil:
 			log.Printf("✅ Applied migration %s_%s", migration.Version, migration.Name)
-		case isVersionTaken(err):
+		case errors.Is(err, ErrSkipped), isVersionTaken(err):
 			log.Printf("Migration %s_%s was applied by another node", migration.Version, migration.Name)
 		case isMigrationIdempotentError(err):
 			// The schema change is already in place without its version
@@ -120,9 +125,10 @@ func (m *Migrator) appliedVersions(ctx context.Context) (map[string]bool, error)
 	return applied, nil
 }
 
-// apply runs migration as one transaction whose first statement records its
-// version.
+// apply runs migration as one transaction, conditional on its version not
+// being recorded, whose first statement records its version.
 func (m *Migrator) apply(ctx context.Context, migration Migration) error {
+	ctx = WithUnlessExists(ctx, `SELECT 1 FROM schema_migrations WHERE version = ?`, migration.Version)
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)

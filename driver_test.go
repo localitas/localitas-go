@@ -1,8 +1,10 @@
 package client
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -215,6 +217,70 @@ func TestDriver_Transaction(t *testing.T) {
 	}
 	if receivedStmts[1]["sql"] != "INSERT INTO items (order_id, name) VALUES (?, ?)" {
 		t.Errorf("stmt[1] sql = %v", receivedStmts[1]["sql"])
+	}
+}
+
+// A transaction begun under WithUnlessExists carries its query to core with
+// the statements; core reporting it skipped is ErrSkipped from Commit, and
+// a transaction begun without it carries none.
+func TestDriver_ConditionalTransaction(t *testing.T) {
+	recorded := map[string]bool{}
+	var plain []sqlExecRequest
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /apps/data/api/databases/testdb/exec", func(w http.ResponseWriter, r *http.Request) {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		var req sqlExecRequest
+		if err := dec.Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var res SQLExecResult
+		switch {
+		case req.UnlessExists == nil:
+			plain = append(plain, req)
+		case req.UnlessExists.SQL != "SELECT 1 FROM versions WHERE v = ?" || len(req.UnlessExists.Args) != 1:
+			http.Error(w, "unexpected unless_exists", http.StatusBadRequest)
+			return
+		default:
+			v := req.UnlessExists.Args[0].(string)
+			res.Skipped = recorded[v]
+			if !res.Skipped {
+				recorded[v] = true
+				res.RowsAffected = int64(len(req.Statements))
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(res)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	db, err := sql.Open("localitas", srv.URL+"?database_id=testdb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	commit := func(ctx context.Context) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec("INSERT INTO versions (v) VALUES (?)", "v1"); err != nil {
+			t.Fatal(err)
+		}
+		return tx.Commit()
+	}
+	guarded := WithUnlessExists(context.Background(), "SELECT 1 FROM versions WHERE v = ?", "v1")
+	if err := commit(guarded); err != nil {
+		t.Fatalf("first conditional commit: %v", err)
+	}
+	if err := commit(guarded); !errors.Is(err, ErrSkipped) {
+		t.Fatalf("second conditional commit = %v, want ErrSkipped", err)
+	}
+	if err := commit(context.Background()); err != nil || len(plain) != 1 || len(plain[0].Statements) != 1 {
+		t.Fatalf("plain commit = %v, requests without a precondition = %+v", err, plain)
 	}
 }
 

@@ -96,10 +96,27 @@ type SQLStatement struct {
 	Args []interface{} `json:"args,omitempty"`
 }
 
-// SQLExecResult is the result of a write SQL statement.
+// SQLExecResult is the result of a write SQL statement. Skipped reports a
+// conditional transaction (SQLTransactionUnlessExists) whose query found a
+// row: it succeeded and changed nothing.
 type SQLExecResult struct {
 	LastInsertID int64 `json:"last_insert_id"`
 	RowsAffected int64 `json:"rows_affected"`
+	Skipped      bool  `json:"skipped,omitempty"`
+}
+
+// sqlExecRequest is the body of the data API's exec endpoint.
+type sqlExecRequest struct {
+	SQL          string         `json:"sql,omitempty"`
+	Args         []any          `json:"args,omitempty"`
+	Statements   []SQLStatement `json:"statements,omitempty"`
+	UnlessExists *SQLStatement  `json:"unless_exists,omitempty"`
+}
+
+// sqlQueryRequest is the body of the data API's query endpoint.
+type sqlQueryRequest struct {
+	SQL  string `json:"sql"`
+	Args []any  `json:"args,omitempty"`
 }
 
 // SQLQueryResult is the result of a read SQL statement.
