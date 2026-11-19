@@ -17,10 +17,12 @@ const (
 
 // Announcement is an app's registration with core, made by Announce.
 type Announcement struct {
-	c      *Client
-	cancel context.CancelFunc
-	done   chan struct{}
-	name   string // the app core registered, once it has
+	c *Client
+	// stop ends the retries; abort ends an attempt still in flight.
+	stop  context.CancelFunc
+	abort context.CancelFunc
+	done  chan struct{}
+	name  string // the app core registered, once it has
 }
 
 // Announce registers the app serving on ln with core, so core proxies to it
@@ -40,16 +42,18 @@ func (c *Client) Announce(ln net.Listener) *Announcement {
 		return a
 	}
 	appURL := fmt.Sprintf("http://localhost:%d", addr.Port)
-	ctx, cancel := context.WithCancel(context.Background())
-	a.cancel = cancel
+	ctx, stop := context.WithCancel(context.Background())
+	attempt, abort := context.WithCancel(context.Background())
+	a.stop, a.abort = stop, abort
 	go func() {
 		defer close(a.done)
+		defer abort()
 		wait := announceRetryFirst
 		for {
 			var app struct {
 				Name string `json:"name"`
 			}
-			err := c.do(ctx, "POST", "/apps/ext", struct {
+			err := c.do(attempt, "POST", "/apps/ext", struct {
 				URL string `json:"url"`
 			}{appURL}, &app)
 			if err == nil {
@@ -73,10 +77,17 @@ func (c *Client) Announce(ln net.Listener) *Announcement {
 }
 
 // Withdraw stops announcing and takes the app out of core, if core had
-// taken it.
+// taken it. An attempt in flight may already have registered the app (core
+// answers after taking it), and only its answer names the app, so it is
+// waited for, up to withdrawTimeout, rather than abandoned.
 func (a *Announcement) Withdraw() error {
-	if a.cancel != nil {
-		a.cancel()
+	if a.stop != nil {
+		a.stop()
+		select {
+		case <-a.done:
+		case <-time.After(withdrawTimeout):
+			a.abort()
+		}
 	}
 	<-a.done
 	if a.name == "" {
