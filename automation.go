@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
+	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -42,93 +43,6 @@ type Automation struct {
 	NodeID string `json:"node_id,omitempty"`
 }
 
-// Where a node runs.
-const (
-	// StrategyRaftLeader runs the node on one node, the leader.
-	StrategyRaftLeader = "raft_leader"
-	// StrategyAnyNode runs the node on one node.
-	StrategyAnyNode = "any_node"
-	// StrategyAllNodes runs the node on every node, for per-node work.
-	StrategyAllNodes = "all_nodes"
-	// StrategyLocalOnly runs the node only on the node the automation names
-	// (CreateAutomationRequest.NodeID), which calls its own: work on that
-	// node's data, such as a folder on its disk. A cron job names no node,
-	// so it cannot be local_only.
-	StrategyLocalOnly = "local_only"
-)
-
-// DAGNode is one node of an automation. Its settings are its type's, as
-// JSON: build an http-api node with HTTPNode. Core refuses a key the
-// node's type does not have.
-type DAGNode struct {
-	NodeID            string          `json:"node_id"`
-	NodeType          string          `json:"node_type"`
-	ExecutionStrategy string          `json:"execution_strategy"`
-	Metadata          json.RawMessage `json:"metadata,omitempty"`
-}
-
-// HTTPNodeSettings is an http-api node's call. Unset fields take core's
-// defaults: method POST, timeout 30s, 3 retries, backoff 2s ×2 up to 30s,
-// expected status 200.
-type HTTPNodeSettings struct {
-	URL               string            `json:"url"`
-	Method            string            `json:"method,omitempty"`
-	ContentType       string            `json:"content_type,omitempty"`
-	Headers           map[string]string `json:"headers,omitempty"`
-	Body              json.RawMessage   `json:"body,omitempty"`
-	TimeoutMs         int               `json:"timeout_ms,omitempty"`
-	MaxRetries        *int              `json:"max_retries,omitempty"`
-	BackoffMs         *int              `json:"backoff_ms,omitempty"`
-	BackoffMultiplier float64           `json:"backoff_multiplier,omitempty"`
-	MaxBackoffMs      int               `json:"max_backoff_ms,omitempty"`
-	ExpectedStatus    int               `json:"expected_status,omitempty"`
-	AsyncTimeoutMs    int               `json:"async_timeout_ms,omitempty"`
-	VaultCredentialID string            `json:"vault_credential_id,omitempty"`
-	VaultAuthFormat   string            `json:"vault_auth_format,omitempty"`
-	VaultHeaderName   string            `json:"vault_header_name,omitempty"`
-	VaultHeaderPrefix string            `json:"vault_header_prefix,omitempty"`
-}
-
-// Count is n as an optional setting (MaxRetries, BackoffMs), where 0 is a
-// value and not "use the default".
-func Count(n int) *int { return &n }
-
-// HTTPNode is an http-api node that makes the call s describes.
-func HTTPNode(id, strategy string, s HTTPNodeSettings) DAGNode {
-	// A struct of strings, ints and raw JSON always encodes.
-	meta, _ := json.Marshal(s)
-	return DAGNode{NodeID: id, NodeType: "http-api", ExecutionStrategy: strategy, Metadata: meta}
-}
-
-type DAGConfig struct {
-	DAGID       string    `json:"dag_id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Nodes       []DAGNode `json:"nodes"`
-}
-
-type PeriodicTrigger struct {
-	Schedule string `json:"schedule"`
-	Timezone string `json:"timezone"`
-}
-
-type TriggerConfig struct {
-	Periodic *PeriodicTrigger `json:"periodic,omitempty"`
-}
-
-type CreateAutomationRequest struct {
-	Name          string        `json:"name"`
-	Description   string        `json:"description"`
-	DAGConfig     DAGConfig     `json:"dag_config"`
-	TriggerType   string        `json:"trigger_type"`
-	TriggerConfig TriggerConfig `json:"trigger_config"`
-	IsEnabled     bool          `json:"is_enabled"`
-	// NodeID is the node a local_only automation runs on, the one holding
-	// the data it works on; core refuses a local_only automation without
-	// one, and a node for one with no local_only step.
-	NodeID string `json:"node_id,omitempty"`
-}
-
 func (a *AutomationClient) List(ctx context.Context) ([]Automation, error) {
 	var resp struct {
 		Automations []Automation `json:"automations"`
@@ -139,7 +53,12 @@ func (a *AutomationClient) List(ctx context.Context) ([]Automation, error) {
 	return resp.Automations, nil
 }
 
+// Create stores the automation req describes (or replaces the caller's
+// automation of that name), after checking it as core will (Validate).
 func (a *AutomationClient) Create(ctx context.Context, req CreateAutomationRequest) (*Automation, error) {
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
 	var out Automation
 	if err := a.client.do(ctx, "POST", "/apps/automation/api/automations", req, &out); err != nil {
 		return nil, err
@@ -167,19 +86,47 @@ func (a *AutomationClient) GetRun(ctx context.Context, runID string) (*Automatio
 
 // runOutcome is what a run's completion carries.
 type runOutcome struct {
-	Status string `json:"status"`
-	Result any    `json:"result,omitempty"`
-	Error  string `json:"error"`
+	Status         string `json:"status"`
+	Result         any    `json:"result,omitempty"`
+	Error          string `json:"error"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
-// PublishResult completes a run with status ("completed" when empty), the
-// work's result (a value that encodes to a JSON object, such as a struct, or
-// nil) and, for a failure, its error.
+// IdempotencyKeyHeader names the try core calls an app for:
+// "<run>/<task>/<try>", the same on every attempt of that call.
+const IdempotencyKeyHeader = "Idempotency-Key"
+
+// AsyncCall is the automation call an app answers asynchronously: its run,
+// and the Idempotency-Key naming the task's try, when core sent one.
+type AsyncCall struct {
+	RunID          string
+	IdempotencyKey string
+}
+
+// AsyncCallFrom is the automation call r is, from its headers; RunID is
+// empty when r is not one.
+func AsyncCallFrom(r *http.Request) AsyncCall {
+	return AsyncCall{RunID: r.Header.Get(AutomationRunIDHeader), IdempotencyKey: r.Header.Get(IdempotencyKeyHeader)}
+}
+
+// PublishResult completes run runID with status ("completed" when empty),
+// the work's result (a value that encodes to a JSON object, such as a
+// struct, or nil) and, for a failure, its error. It names no try: prefer
+// Complete with the AsyncCall, which core restricts to the try it called.
 func (a *AutomationClient) PublishResult(ctx context.Context, runID string, status string, result any, errMsg string) error {
+	return a.Complete(ctx, AsyncCall{RunID: runID}, status, result, errMsg)
+}
+
+// Complete completes call as PublishResult does, echoing its
+// Idempotency-Key, so core ends that try and refuses the completion (409)
+// once the try no longer waits for it: a zombie's late result is not
+// recorded.
+func (a *AutomationClient) Complete(ctx context.Context, call AsyncCall, status string, result any, errMsg string) error {
 	if status == "" {
 		status = "completed"
 	}
-	return a.client.do(ctx, "POST", fmt.Sprintf("/apps/automation/api/runs/%s/complete", runID), runOutcome{Status: status, Result: result, Error: errMsg}, nil)
+	return a.client.do(ctx, "POST", "/apps/automation/api/runs/"+url.PathEscape(call.RunID)+"/complete",
+		runOutcome{Status: status, Result: result, Error: errMsg, IdempotencyKey: call.IdempotencyKey}, nil)
 }
 
 // The automations cache, and the channel a core that predates per-owner
@@ -247,10 +194,8 @@ func (a *AutomationClient) WaitForRun(ctx context.Context, runID string, opts ..
 		return run, nil
 	}
 
-	ps := NewPubSubWS("ws"+strings.TrimPrefix(a.client.baseURL, "http")+"/apps/cache/ws/"+automationsCache, a.client.bearer(ctx))
-	defer ps.Close()
 	finished := make(chan struct{}, 1)
-	ps.Watch(channel, noted, func(msg PubSubMessage) {
+	ps := a.client.Cache(automationsCache).Watch(channel, noted, func(msg PubSubMessage) {
 		var announced struct {
 			RunID string `json:"run_id"`
 		}
@@ -261,6 +206,7 @@ func (a *AutomationClient) WaitForRun(ctx context.Context, runID string, opts ..
 			}
 		}
 	})
+	defer ps.Close()
 	select {
 	case <-finished:
 		return a.GetRun(ctx, runID)

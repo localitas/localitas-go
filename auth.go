@@ -125,9 +125,6 @@ func ResetIdentityPublicKeys() {
 // systemToken is the API token core gave the app; core's automation calls
 // the app's cron and event routes with it.
 func systemToken() string {
-	if t := os.Getenv("LOCALITAS_API_TOKEN"); t != "" {
-		return t
-	}
 	return DefaultToken()
 }
 
@@ -167,9 +164,13 @@ func fetchIdentityKey() {
 		return
 	}
 	identity.lastFetch = time.Now()
+	core, err := coreURLFromEnv()
+	if err != nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, DefaultCoreURL()+"/api/auth/identity/public-key", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(core, "/")+"/api/auth/identity/public-key", nil)
 	if err != nil {
 		return
 	}

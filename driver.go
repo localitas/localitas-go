@@ -2,10 +2,12 @@
 //
 // Usage:
 //
-//	import _ "github.com/localitas/localitas/client" // register driver
-//
-//	db, err := sql.Open("localitas", "http://localhost:8090?database_id=db_123&token=base64...")
+//	c, _ := client.Default()
+//	db, err := c.DB(ctx, "myapp") // the app's system database, by name
 //	rows, err := db.QueryContext(ctx, "SELECT id, data FROM contacts WHERE id = ?", id)
+//
+// The DSN form sql.Open("localitas", "<core URL>?database_id=<id>&token=<t>")
+// still works until the cleanup slice.
 package client
 
 import (
@@ -25,6 +27,73 @@ func init() {
 }
 
 type localitasDriver struct{}
+
+// DB is the system database named name (the app's own, created on first
+// use by core, idempotently by name), as a *sql.DB on this client: its core
+// and its token, no DSN. The name is resolved to the database's ID now when
+// core answers; when core cannot yet (no leader, not listening, a 5xx) the
+// DB is returned all the same and resolves at its first use, so an app
+// started while core's data shard elects keeps going. A refusal (a 4xx, such
+// as a token that may not create system databases) is the error.
+func (c *Client) DB(ctx context.Context, name string) (*sql.DB, error) {
+	if name == "" {
+		return nil, errors.New("DB needs the database's name")
+	}
+	k := &dbConnector{client: c, name: name}
+	if _, err := k.databaseID(ctx); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != 429 {
+			return nil, fmt.Errorf("database %s: %w", name, err)
+		}
+		if errors.Is(err, ErrNoCoreURL) {
+			return nil, err
+		}
+	}
+	return sql.OpenDB(k), nil
+}
+
+// OpenDatabase is the database with ID id as a *sql.DB on this client. It
+// makes no call until it is used.
+func (c *Client) OpenDatabase(id string) *sql.DB {
+	return sql.OpenDB(&dbConnector{client: c, id: id})
+}
+
+// dbConnector opens connections to one database on a client, its ID known
+// or resolved from its name once.
+type dbConnector struct {
+	client *Client
+	name   string
+
+	mu sync.Mutex
+	id string
+}
+
+func (k *dbConnector) databaseID(ctx context.Context) (string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.id != "" {
+		return k.id, nil
+	}
+	db, err := k.client.CreateSystemDatabase(ctx, k.name)
+	if err != nil {
+		return "", err
+	}
+	if db.ID == "" {
+		return "", fmt.Errorf("database %s: core named no ID", k.name)
+	}
+	k.id = db.ID
+	return k.id, nil
+}
+
+func (k *dbConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	id, err := k.databaseID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &localitasConn{client: k.client, dbID: id}, nil
+}
+
+func (k *dbConnector) Driver() driver.Driver { return &localitasDriver{} }
 
 // clientCache holds one *Client per (baseURL, token). sql.DB opens a new
 // driver.Conn per pooled connection; without this each would build its own

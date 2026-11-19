@@ -13,7 +13,7 @@ import (
 // the SDK but don't run against a real server.
 
 func Example_kvBasics() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 
 	// Get a cache reference
@@ -34,7 +34,7 @@ func Example_kvBasics() {
 }
 
 func Example_rateLimiting() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("rate_limiter")
 
@@ -53,7 +53,7 @@ func Example_rateLimiting() {
 }
 
 func Example_distributedLock() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("locks")
 
@@ -70,7 +70,7 @@ func Example_distributedLock() {
 }
 
 func Example_atomicSwap() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("state")
 
@@ -84,7 +84,7 @@ func Example_atomicSwap() {
 }
 
 func Example_patternSearch() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("app")
 
@@ -102,7 +102,7 @@ func Example_patternSearch() {
 }
 
 func Example_hash() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("app")
 
@@ -133,7 +133,7 @@ func Example_hash() {
 }
 
 func Example_list() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("app")
 
@@ -155,7 +155,7 @@ func Example_list() {
 }
 
 func Example_setStore() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("app")
 
@@ -170,7 +170,7 @@ func Example_setStore() {
 }
 
 func Example_sortedSet() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("game")
 
@@ -203,7 +203,7 @@ func Example_sortedSet() {
 }
 
 func Example_queue() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("app")
 
@@ -224,7 +224,7 @@ func Example_queue() {
 }
 
 func Example_stack() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("app")
 
@@ -240,7 +240,7 @@ func Example_stack() {
 }
 
 func Example_durablePubSub_broadcast() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("events")
 
@@ -268,7 +268,7 @@ func Example_durablePubSub_broadcast() {
 }
 
 func Example_durablePubSub_consumerGroup() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 	cache := c.Cache("work")
 
@@ -306,7 +306,7 @@ func sendEmail(payload string) {
 }
 
 func Example_cacheManagement() {
-	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	c, _ := client.Default()
 	ctx := context.Background()
 
 	// Create named caches (isolated databases)
