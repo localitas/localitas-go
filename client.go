@@ -69,11 +69,10 @@ func coreURLFromEnv() (string, error) {
 }
 
 // DefaultToken is the app's API token: LOCALITAS_API_TOKEN, else the one in
-// ~/.localitas/config-core.yaml (core.auth.api_token, starting "lt_").
-//
-// Deprecated: use Default. Reading core's config file assumes the app runs
-// on core's machine; core gives every app LOCALITAS_API_TOKEN. Kept for the
-// apps that read it until the cleanup slice.
+// ~/.localitas/config-core.yaml (core.auth.api_token, starting "lt_"). Apps
+// use Default instead: reading core's config file assumes the app runs on
+// core's machine, and core gives every app LOCALITAS_API_TOKEN. Kept for the
+// apps and tools that read it until the cleanup slice.
 func DefaultToken() string {
 	if t := os.Getenv("LOCALITAS_API_TOKEN"); t != "" {
 		return t
@@ -111,8 +110,8 @@ func readAPITokenFromConfig(path string) string {
 
 // DefaultCoreURL is CORE_URL, or "" when it is not set: a client given ""
 // fails every call with ErrNoCoreURL instead of guessing where core is.
-//
-// Deprecated: use Default, which also checks the URL and the token.
+// Apps use Default, which also checks the URL and the token; this is kept
+// until the cleanup slice.
 func DefaultCoreURL() string {
 	return os.Getenv("CORE_URL")
 }
