@@ -34,8 +34,11 @@ func fixtureRequest() CreateAutomationRequest {
 					WithTask(Task{Dependencies: []string{"fetch"}, DependsOnPast: true, TriggerRule: RuleAllDone}),
 				SensorNode("wait_time", StrategyAnyNode, TimeSensor("15m")).WithTask(Task{Dependencies: []string{"fetch"}}),
 				SensorNode("wait_file", StrategyAllNodes, FileSensor("/Documents/inbox")).WithTask(Task{Dependencies: []string{"fetch"}}),
+				SensorNode("wait_paid", StrategyAnyNode, PubSubSensor("orders", map[string]json.RawMessage{
+					"status": json.RawMessage(`"paid"`), "order.total": json.RawMessage(`100`),
+				}).InCache("localitas_automations").Within("2h")).WithTask(Task{Dependencies: []string{"fetch"}, PriorityWeight: Count(10)}),
 				HTTPNode("report", StrategyAnyNode, HTTPNodeSettings{URL: "https://example.com/hook", Body: json.RawMessage(`{"ok": true}`)}).
-					WithTask(Task{Dependencies: []string{"wait_event", "wait_time", "wait_file"}, TriggerRule: RuleOneSuccess}),
+					WithTask(Task{Dependencies: []string{"wait_event", "wait_time", "wait_file", "wait_paid"}, TriggerRule: RuleOneSuccess}),
 			},
 		},
 	}
