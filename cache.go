@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,13 +18,67 @@ import (
 //
 // Usage:
 //
-//	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+//	c, _ := client.Default()
 //	sessions := c.Cache("sessions")
 //	sessions.Set(ctx, "user:abc", `{"name":"Alice"}`, 30*time.Minute)
 //	val, err := sessions.Get(ctx, "user:abc")
 type CacheRef struct {
 	client *Client
 	name   string
+
+	mu     sync.Mutex
+	socket *PubSubWS
+}
+
+// cacheSocketURL is the WebSocket URL of cache on the client's core: ws for
+// an http core URL, wss for https, at the same host and base path.
+func (c *Client) cacheSocketURL(cache string) string {
+	u, err := url.Parse(c.baseURL)
+	if err != nil || c.baseURL == "" {
+		return ""
+	}
+	scheme := "ws"
+	if u.Scheme == "https" {
+		scheme = "wss"
+	}
+	return scheme + "://" + u.Host + strings.TrimRight(u.EscapedPath(), "/") + "/apps/cache/ws/" + url.PathEscape(cache)
+}
+
+// Socket is the cache's one WebSocket to core, opened on first use with the
+// client's token and reused by every Subscribe, Watch and WatchLatest on
+// this CacheRef. It reconnects by itself; Close it when done.
+func (r *CacheRef) Socket(opts ...PubSubWSOption) *PubSubWS {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.socket == nil {
+		r.socket = NewPubSubWS(r.client.cacheSocketURL(r.name), r.client.bearer(context.Background()), opts...)
+	}
+	return r.socket
+}
+
+// Subscribe calls callback with each message of channel that consumer has
+// not read, keeping consumer's cursor on the server (no message missed
+// across reconnects). It returns the cache's socket.
+func (r *CacheRef) Subscribe(channel, consumer string, callback func(PubSubMessage)) *PubSubWS {
+	ps := r.Socket()
+	ps.Subscribe(channel, consumer, callback)
+	return ps
+}
+
+// Watch calls callback with each message published to channel after
+// afterSeq (see PubSubWS.Watch). It returns the cache's socket.
+func (r *CacheRef) Watch(channel string, afterSeq int64, callback func(PubSubMessage)) *PubSubWS {
+	ps := r.Socket()
+	ps.Watch(channel, afterSeq, callback)
+	return ps
+}
+
+// WatchLatest calls callback with each message published to channel from
+// now on. It returns the cache's socket.
+func (r *CacheRef) WatchLatest(channel string, callback func(PubSubMessage)) *PubSubWS {
+	ps := r.Socket()
+	ps.WatchLatest(channel, callback)
+	return ps
 }
 
 // Cache returns a CacheRef bound to the named cache. The cache must already

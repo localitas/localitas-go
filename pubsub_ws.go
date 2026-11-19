@@ -20,8 +20,7 @@ import (
 //
 // Usage:
 //
-//	ps := client.NewPubSubWS("ws://localhost:8080/apps/cache/ws/my-cache", token)
-//	ps.Subscribe("notifications", "worker-1", func(msg client.PubSubMessage) {
+//	ps := c.Cache("my-cache").Subscribe("notifications", "worker-1", func(msg client.PubSubMessage) {
 //	    fmt.Println("got:", msg.Value)
 //	})
 //	ps.Publish("events", `{"type":"click"}`)
@@ -116,9 +115,10 @@ func WithMaxAgeSeconds(n int) PubSubPublishWSOption {
 	return func(msg *wsOutgoing) { msg.MaxAgeSeconds = n }
 }
 
-// NewPubSubWS creates a WebSocket pub/sub client and connects immediately.
-// The url should be a WebSocket URL like ws://host:port/apps/cache/ws/{cache}.
-// The token is sent as a query parameter for authentication.
+// NewPubSubWS creates a WebSocket pub/sub client for the socket at wsURL
+// and connects immediately; the token is sent on the handshake. Apps use
+// CacheRef.Socket (or Subscribe, Watch, WatchLatest), which builds the URL
+// from the client's core URL; this form is for tests and tools.
 func NewPubSubWS(wsURL, token string, opts ...PubSubWSOption) *PubSubWS {
 	ps := &PubSubWS{
 		url:                  wsURL,

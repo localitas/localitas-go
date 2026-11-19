@@ -21,13 +21,10 @@ func TestDefaultCoreURL_UsesCoreURLEnv(t *testing.T) {
 	}
 }
 
-func TestDefaultCoreURL_ReturnsLocalhost(t *testing.T) {
+func TestDefaultCoreURL_NeverGuesses(t *testing.T) {
 	t.Setenv("CORE_URL", "")
-	u := DefaultCoreURL()
-	if runtime.GOOS != "linux" {
-		if u != "http://localhost:"+DefaultCorePort {
-			t.Fatalf("expected localhost URL on non-linux, got %s", u)
-		}
+	if u := DefaultCoreURL(); u != "" {
+		t.Fatalf("DefaultCoreURL without CORE_URL = %q, want none rather than a guess", u)
 	}
 }
 
@@ -45,6 +42,7 @@ func TestDefaultToken_ReadsConfig(t *testing.T) {
 	configDir := filepath.Join(dir, ".localitas")
 	os.MkdirAll(configDir, 0755)
 	os.WriteFile(filepath.Join(configDir, "config-core.yaml"), []byte("core:\n  auth:\n    api_token: lt_from_config\n"), 0600)
+	t.Setenv("LOCALITAS_API_TOKEN", "")
 
 	origHome := os.Getenv("HOME")
 	os.Setenv("HOME", dir)
@@ -57,6 +55,7 @@ func TestDefaultToken_ReadsConfig(t *testing.T) {
 }
 
 func TestDefaultToken_MissingFile(t *testing.T) {
+	t.Setenv("LOCALITAS_API_TOKEN", "")
 	dir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	os.Setenv("HOME", dir)

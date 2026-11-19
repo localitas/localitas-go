@@ -176,7 +176,7 @@ func TestPublishCompletion_GivesUpAfterLimitedAttempts(t *testing.T) {
 	}
 	c, _, calls := completionServer(t, statuses...)
 	start := time.Now()
-	c.publishCompletion("run-down", "completed", scanSummary{}, "")
+	c.publishCompletion(AsyncCall{RunID: "run-down"}, "completed", scanSummary{}, "")
 	if n := calls.Load(); n != publishAttempts {
 		t.Fatalf("publish attempts = %d, want %d", n, publishAttempts)
 	}

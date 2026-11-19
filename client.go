@@ -5,16 +5,24 @@
 // never stores credentials or validates tokens — that is the responsibility of
 // the upstream reverse proxy.
 //
-// Quick start:
+// Quick start, in an app core runs (core sets CORE_URL and
+// LOCALITAS_API_TOKEN for every app, container or native):
 //
-//	c := client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+//	c, err := client.Default()
 //	secrets, _ := c.VaultGetSecrets(ctx, "my-credential-id")
+//	db, _ := c.DB(ctx, "myapp")
+//	c.App("antivirus").Post(ctx, "/api/scan", req, &verdict)
+//	c.Cache("events").Subscribe("orders", "worker-1", onMessage)
+//
+// An app never names a host, a port or a protocol: the client reaches core
+// at the URL core gave it, other apps by name, and picks ws or wss itself.
 package client
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -27,15 +35,48 @@ import (
 	"time"
 )
 
-const (
-	// DefaultCorePort is the default HTTP port for the Localitas core server.
-	DefaultCorePort = "8090"
-)
+// ErrNoCoreURL is the error of Default, and of every call of a client that
+// was given no core URL, when CORE_URL is not set.
+var ErrNoCoreURL = errors.New("CORE_URL is not set: core sets it for every app it runs; outside core pass the URL to client.New")
 
-// DefaultToken reads the API token from ~/.localitas/config-core.yaml
-// (core.auth.api_token). Returns empty string if the file is missing
-// or does not contain a valid token (must start with "lt_").
+// Default is the client of an app core runs: core's URL from CORE_URL and
+// the app's API token from LOCALITAS_API_TOKEN, both of which core sets for
+// every app it starts. It fails, naming the variable, when either is
+// missing or CORE_URL is not an http(s) URL; it never guesses an address.
+func Default() (*Client, error) {
+	base, err := coreURLFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	token := os.Getenv("LOCALITAS_API_TOKEN")
+	if token == "" {
+		return nil, errors.New("LOCALITAS_API_TOKEN is not set: core sets it for every app it runs; outside core pass a token to WithToken")
+	}
+	return New(base).WithToken(token), nil
+}
+
+// coreURLFromEnv is CORE_URL, checked to be an http(s) URL.
+func coreURLFromEnv() (string, error) {
+	raw := os.Getenv("CORE_URL")
+	if raw == "" {
+		return "", ErrNoCoreURL
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("CORE_URL %q is not an http(s) URL of core", raw)
+	}
+	return raw, nil
+}
+
+// DefaultToken is the app's API token: LOCALITAS_API_TOKEN, else the one in
+// ~/.localitas/config-core.yaml (core.auth.api_token, starting "lt_"). Apps
+// use Default instead: reading core's config file assumes the app runs on
+// core's machine, and core gives every app LOCALITAS_API_TOKEN. Kept for the
+// apps and tools that read it until the cleanup slice.
 func DefaultToken() string {
+	if t := os.Getenv("LOCALITAS_API_TOKEN"); t != "" {
+		return t
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
@@ -67,24 +108,18 @@ func readAPITokenFromConfig(path string) string {
 	return ""
 }
 
-// DefaultCoreURL returns the base URL for the Localitas core server.
-// Inside Docker containers it returns http://host.docker.internal:8090,
-// otherwise http://localhost:8090.
+// DefaultCoreURL is CORE_URL, or "" when it is not set: a client given ""
+// fails every call with ErrNoCoreURL instead of guessing where core is.
+// Apps use Default, which also checks the URL and the token; this is kept
+// until the cleanup slice.
 func DefaultCoreURL() string {
-	// Core sets CORE_URL on every app container it launches, pointing at itself.
-	// It must win: several clusters can share one Docker host, and the
-	// port-based default would send every app to the 8090 cluster.
-	if u := os.Getenv("CORE_URL"); u != "" {
-		return u
-	}
-	if isContainer() {
-		return "http://host.docker.internal:" + DefaultCorePort
-	}
-	return "http://localhost:" + DefaultCorePort
+	return os.Getenv("CORE_URL")
 }
 
-// CoreURLFromConfig reads the HTTP port from the given config file and
-// returns the base URL. Falls back to DefaultCoreURL if not found.
+// CoreURLFromConfig is the URL of the core whose config file is at path,
+// for operator tools on that core's machine: its own node over loopback at
+// the config's http_port. Without a readable http_port it is
+// DefaultCoreURL().
 func CoreURLFromConfig(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -96,8 +131,8 @@ func CoreURLFromConfig(path string) string {
 			val := strings.TrimPrefix(trimmed, "http_port:")
 			val = strings.TrimSpace(val)
 			val = strings.Trim(val, "\"'")
-			if val != "" && val != "0" {
-				return "http://localhost:" + val
+			if port, err := strconv.Atoi(val); err == nil && port > 0 {
+				return (&url.URL{Scheme: "http", Host: "127.0.0.1:" + strconv.Itoa(port)}).String()
 			}
 		}
 	}
@@ -206,7 +241,11 @@ type identityTokenResponse struct {
 func (c *Client) refreshIdentity(ctx context.Context, token string) (string, error) {
 	ctx, cancel := bounded(ctx)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/auth/identity/refresh", nil)
+	target, err := c.urlFor(http.MethodPost, "/api/auth/identity/refresh")
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, nil)
 	if err != nil {
 		return "", err
 	}
@@ -804,7 +843,11 @@ func (c *Client) VaultImport1Password(ctx context.Context, filename string, data
 
 	ctx, cancel := bounded(ctx)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/apps/vault/api/import/1password", &body)
+	target, err := c.urlFor("POST", "/apps/vault/api/import/1password")
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", target, &body)
 	if err != nil {
 		return nil, err
 	}
@@ -910,7 +953,11 @@ func (c *Client) Download(ctx context.Context, path string, w io.Writer) (int64,
 	if c == nil {
 		return 0, fmt.Errorf("localitas client is nil: GET %s", path)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	target, err := c.urlFor(http.MethodGet, path)
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -927,6 +974,15 @@ func (c *Client) Download(ctx context.Context, path string, w io.Writer) (int64,
 		return 0, &APIError{Method: http.MethodGet, Path: path, StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(respBody))}
 	}
 	return io.Copy(w, resp.Body)
+}
+
+// urlFor is the URL of path on core, or ErrNoCoreURL for a client that was
+// given no core URL.
+func (c *Client) urlFor(method, path string) (string, error) {
+	if c.baseURL == "" {
+		return "", fmt.Errorf("%s %s: %w", method, path, ErrNoCoreURL)
+	}
+	return c.baseURL + path, nil
 }
 
 // bounded is ctx, limited to requestTimeout when it has no deadline of its
@@ -957,7 +1013,11 @@ func (c *Client) send(ctx context.Context, method, path, contentType string, bod
 	if c == nil {
 		return fmt.Errorf("localitas client is nil: %s %s", method, path)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	target, err := c.urlFor(method, path)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target, body)
 	if err != nil {
 		return err
 	}

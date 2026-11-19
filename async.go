@@ -15,29 +15,30 @@ const AutomationRunIDHeader = "Localitas-Automation-Run-ID"
 // RunAsync runs work after answering 202 when core's automation called with
 // a run ID, and publishes its outcome to the run: the work's own result type
 // on success (it must encode to a JSON object, as a struct does), its error
-// on failure. Core times the run itself. Without a run ID it returns false
-// and the handler answers the call itself.
+// on failure. The completion echoes the call's Idempotency-Key, so core
+// ends the try it called and no other. Core times the run itself. Without a
+// run ID it returns false and the handler answers the call itself.
 func RunAsync[T any](c *Client, w http.ResponseWriter, r *http.Request, work func(ctx context.Context) (T, error)) bool {
 	if c == nil {
 		return false
 	}
-	runID := r.Header.Get(AutomationRunIDHeader)
-	if runID == "" {
+	call := AsyncCallFrom(r)
+	if call.RunID == "" {
 		return false
 	}
 
 	go func() {
 		result, err := runAsyncWork(work)
 		if err != nil {
-			c.publishCompletion(runID, "failed", nil, err.Error())
+			c.publishCompletion(call, "failed", nil, err.Error())
 			return
 		}
-		c.publishCompletion(runID, "completed", result, "")
+		c.publishCompletion(call, "completed", result, "")
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"run_id": runID})
+	json.NewEncoder(w).Encode(map[string]string{"run_id": call.RunID})
 	return true
 }
 
@@ -60,11 +61,12 @@ const (
 // publishCompletion reports a run's outcome, retrying a publish that failed
 // for a reason that may pass (a 5xx, a dropped connection): a run whose
 // completion never arrives stays running until its caller times out.
-func (c *Client) publishCompletion(runID, status string, result any, errMsg string) {
+func (c *Client) publishCompletion(call AsyncCall, status string, result any, errMsg string) {
+	runID := call.RunID
 	backoff := publishFirstBackoff
 	for attempt := 1; ; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err := c.Automation().PublishResult(ctx, runID, status, result, errMsg)
+		err := c.Automation().Complete(ctx, call, status, result, errMsg)
 		cancel()
 		if err == nil {
 			return
