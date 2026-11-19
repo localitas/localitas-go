@@ -383,13 +383,7 @@ func (c *Client) GetRow(ctx context.Context, dbID, tableID, rowID string) (*Row,
 // SQLExec executes a write SQL statement (INSERT, UPDATE, DELETE, CREATE TABLE, etc.)
 // against the database. Returns the number of rows affected.
 func (c *Client) SQLExec(ctx context.Context, dbID, sql string, args ...interface{}) (*SQLExecResult, error) {
-	var out SQLExecResult
-	path := fmt.Sprintf("/apps/data/api/databases/%s/exec", url.PathEscape(dbID))
-	body := map[string]any{"sql": sql, "args": args}
-	if err := c.do(ctx, "POST", path, body, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+	return c.sqlExec(ctx, dbID, sqlExecRequest{SQL: sql, Args: args})
 }
 
 // SQLQuery executes a read SQL statement (SELECT) against the database.
@@ -397,8 +391,7 @@ func (c *Client) SQLExec(ctx context.Context, dbID, sql string, args ...interfac
 func (c *Client) SQLQuery(ctx context.Context, dbID, sql string, args ...interface{}) (*SQLQueryResult, error) {
 	var out SQLQueryResult
 	path := fmt.Sprintf("/apps/data/api/databases/%s/query", url.PathEscape(dbID))
-	body := map[string]any{"sql": sql, "args": args}
-	if err := c.do(ctx, "POST", path, body, &out); err != nil {
+	if err := c.do(ctx, "POST", path, sqlQueryRequest{SQL: sql, Args: args}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -407,9 +400,24 @@ func (c *Client) SQLQuery(ctx context.Context, dbID, sql string, args ...interfa
 // SQLTransaction executes multiple SQL statements as an atomic transaction.
 // Either all statements succeed or none are applied.
 func (c *Client) SQLTransaction(ctx context.Context, dbID string, stmts []SQLStatement) (*SQLExecResult, error) {
+	return c.sqlExec(ctx, dbID, sqlExecRequest{Statements: stmts})
+}
+
+// SQLTransactionUnlessExists applies stmts as one atomic transaction unless
+// the read-only query unlessExists returns a row. Core runs the query inside
+// the replicated transaction, on the state every node holds at its place in
+// the log, so of writers racing on one condition exactly one applies; the
+// others succeed with Skipped set and change nothing. This is a write's
+// compare-and-set: "insert this version row unless it is there" never fails
+// on a lost race. Core refuses a query that is not one read-only SELECT,
+// WITH or VALUES statement.
+func (c *Client) SQLTransactionUnlessExists(ctx context.Context, dbID string, unlessExists SQLStatement, stmts []SQLStatement) (*SQLExecResult, error) {
+	return c.sqlExec(ctx, dbID, sqlExecRequest{Statements: stmts, UnlessExists: &unlessExists})
+}
+
+func (c *Client) sqlExec(ctx context.Context, dbID string, body sqlExecRequest) (*SQLExecResult, error) {
 	var out SQLExecResult
 	path := fmt.Sprintf("/apps/data/api/databases/%s/exec", url.PathEscape(dbID))
-	body := map[string]any{"statements": stmts}
 	if err := c.do(ctx, "POST", path, body, &out); err != nil {
 		return nil, err
 	}
