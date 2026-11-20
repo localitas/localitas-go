@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestDriver_QueryAndExec(t *testing.T) {
@@ -217,6 +218,54 @@ func TestDriver_Transaction(t *testing.T) {
 	}
 	if receivedStmts[1]["sql"] != "INSERT INTO items (order_id, name) VALUES (?, ?)" {
 		t.Errorf("stmt[1] sql = %v", receivedStmts[1]["sql"])
+	}
+}
+
+// A transaction's commit ends with the context it began with: core holding
+// the commit (a write waiting on a cluster that cannot commit it) does not
+// hold the caller past its deadline. database/sql's Commit takes no context,
+// so a commit sent with none waited until core answered (a node's drain
+// hand-off held past its deadline, 2026-11-20).
+func TestDriver_CommitEndsWithTheTransactionsContext(t *testing.T) {
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /apps/data/api/databases/testdb/exec", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(SQLExecResult{RowsAffected: 1})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	// Released before the server closes, which waits for the held commit.
+	defer close(release)
+
+	db, err := sql.Open("localitas", srv.URL+"?database_id=testdb")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO orders (id) VALUES (?)", "o1"); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	committed := make(chan error, 1)
+	go func() { committed <- tx.Commit() }()
+	select {
+	case err := <-committed:
+		if err == nil {
+			t.Fatal("a commit core never answered succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the commit was still waiting on core 5s after its transaction's 300ms deadline")
 	}
 }
 
