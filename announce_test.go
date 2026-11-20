@@ -231,11 +231,33 @@ func TestAnnounce_NotReadyRegistrationWaitsAgainThenRegistersOnce(t *testing.T) 
 	}
 }
 
+// An app announces before it serves, so core may not reach it yet (502): it
+// is asked again, and registers once it answers.
+func TestAnnounce_AnAppCoreCannotReachYetIsAskedAgainThenRegistersOnce(t *testing.T) {
+	core := newFakeCore(t)
+	core.postStatus = []int{http.StatusBadGateway}
+	core.becomeReady()
+	a := announceTo(t, core.URL)
+
+	for i, want := range []string{"ready", "post", "ready", "post"} {
+		if e := core.next(t); e != want {
+			t.Fatalf("call %d was %s, want %s: core could not reach the app yet (502) and it did not register once it answered", i+1, e, want)
+		}
+	}
+	waitDone(t, a)
+	if a.Name() != "app" {
+		t.Fatalf("registered as %q, want app", a.Name())
+	}
+	if n := core.postCount(); n != 2 {
+		t.Fatalf("registered %d times, want 2 asks", n)
+	}
+}
+
 // A registration core refuses for any other reason is a fault: logged, not
 // tried again.
 func TestAnnounce_RefusedRegistrationIsNotRetried(t *testing.T) {
 	core := newFakeCore(t)
-	core.postStatus = []int{http.StatusBadGateway}
+	core.postStatus = []int{http.StatusUnprocessableEntity}
 	core.becomeReady()
 	a := announceTo(t, core.URL)
 

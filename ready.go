@@ -126,6 +126,13 @@ func coreDown(err error) bool {
 		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
+// appNotAnswering is whether core could not take the app because the app did
+// not answer it yet (502): its port closed, or health.json not served yet.
+func appNotAnswering(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadGateway
+}
+
 // notReady is whether a call failed because core could not take it yet: it
 // answered 503 (not ready), or its process is not there.
 func notReady(err error) bool {

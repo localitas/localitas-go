@@ -28,8 +28,9 @@ type Announcement struct {
 // background, waits until core is ready (WaitReady) and registers the app
 // once, since core reads the app while registering it: call it before
 // serving. A registration core answers 503 (not ready: it restarted) waits
-// again; any other failure is logged at ERROR and not tried again. Call
-// Withdraw on shutdown.
+// again; one it answers 502 (the app does not answer yet) is asked again
+// after a bounded backoff; any other failure is logged at ERROR and not
+// tried again. Call Withdraw on shutdown.
 //
 // In a container it does nothing: core registers app containers itself when
 // Docker reports them healthy, and only core knows the port it published.
@@ -47,6 +48,7 @@ func (c *Client) Announce(ln net.Listener) *Announcement {
 	go func() {
 		defer close(a.done)
 		defer abort()
+		redial := redialFirst
 		for {
 			if err := c.WaitReady(ctx, PhaseReady); err != nil {
 				if ctx.Err() == nil {
@@ -67,6 +69,15 @@ func (c *Client) Announce(ln net.Listener) *Announcement {
 				return
 			case ctx.Err() != nil:
 				return
+			case appNotAnswering(err):
+				// The app announces before it serves: nothing tells this
+				// loop when it starts answering, so core is asked again
+				// after a bounded backoff.
+				slog.Info("core cannot reach the app yet; asking again", "url", appURL, "retry_in", redial, "error", err)
+				if sleepCtx(ctx, redial) != nil {
+					return
+				}
+				redial = min(2*redial, redialMax)
 			case notReady(err):
 				slog.Info("core is not ready to take the app; waiting for it", "url", appURL, "error", err)
 			default:
