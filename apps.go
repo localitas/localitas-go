@@ -2,13 +2,17 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrNotAnAppCall is the error of an App call naming no app or no path: an
@@ -102,35 +106,130 @@ func (c *Client) ListExternalApps(ctx context.Context) ([]ExternalApp, error) {
 	return apps, nil
 }
 
-// AppChange is core's hint that app was registered ("registered") or taken
-// out ("removed"). It is a hint, not the truth: any user with write scope
-// can publish to the channel, so read the app list (or the app) for what is
-// so, and never act on a hint alone.
+// AppChange is a change to app core committed: "registered" (the app is
+// there and changed since: registered, or an instance added or removed) or
+// "removed" (its last instance went). Read the app list (or the app) for
+// what it is now.
 type AppChange struct {
 	App    string `json:"app"`
 	Change string `json:"change"`
 }
 
-// AppsCache and AppChangesChannel are where core announces app changes.
+// AppsCache and AppChangesChannel are where core hints at app changes, once
+// and best-effort; WatchAppChanges does not depend on the hints.
 const (
 	AppsCache         = "localitas_apps"
 	AppChangesChannel = "changes"
 )
 
-// WatchAppChanges calls onChange for every app change core announces from
-// now on, until the returned watch is closed; it reconnects by itself and
-// misses none. Call it before reading the current apps (ListExternalApps):
-// a change is then either in what is read or announced after.
-func (c *Client) WatchAppChanges(ctx context.Context, onChange func(AppChange)) (*PubSubWS, error) {
-	noted, err := c.Cache(AppsCache).PubSub(AppChangesChannel, PubSubOpts{}).LastSeq(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("note the app changes channel: %w", err)
+// appChangesHold is how long core holds one question for the app changes
+// before answering that nothing changed: under core's 30 s write timeout.
+const appChangesHold = 25 * time.Second
+
+// appVersion and appChanges are core's answer to GET /apps/ext/changes: the
+// apps' version and each app there with the version of its last change.
+type appVersion struct {
+	Name    string `json:"name"`
+	Version uint64 `json:"version"`
+}
+
+type appChanges struct {
+	Version uint64       `json:"version"`
+	Apps    []appVersion `json:"apps"`
+}
+
+// AppChangesWatch is a running WatchAppChanges.
+type AppChangesWatch struct {
+	stop context.CancelFunc
+	done chan struct{}
+}
+
+// Close stops the watch and waits for it: onChange is not called after it
+// returns.
+func (w *AppChangesWatch) Close() {
+	w.stop()
+	<-w.done
+}
+
+// WatchAppChanges calls onChange for every app change core commits from
+// now on, until the returned watch is closed. Call it before reading the
+// current apps (ListExternalApps): a change is then either in what is read
+// or passed to onChange after.
+//
+// It asks core for the apps' version now, then for the changes after it, a
+// long poll any node answers as soon as a registration or removal commits
+// past it (or after its hold, when it asks again). The version is the
+// cluster's, the same on every node, so no change is missed: not one whose
+// hint was lost, nor one made while a question was not in flight. A core
+// that cannot answer yet (503, or its process not there) is waited for
+// (WaitReady); any other failure is logged and asked again after a bounded
+// backoff. ctx bounds the first question only.
+func (c *Client) WatchAppChanges(ctx context.Context, onChange func(AppChange)) (*AppChangesWatch, error) {
+	var now appChanges
+	if err := c.do(ctx, http.MethodGet, "/apps/ext/changes", nil, &now); err != nil {
+		return nil, fmt.Errorf("read the app changes version: %w", err)
 	}
-	ps := c.Cache(AppsCache).Watch(AppChangesChannel, noted, func(msg PubSubMessage) {
-		var change AppChange
-		if err := json.Unmarshal([]byte(msg.Value), &change); err == nil && change.App != "" {
-			onChange(change)
+	watchCtx, stop := context.WithCancel(context.Background())
+	w := &AppChangesWatch{stop: stop, done: make(chan struct{})}
+	go func() {
+		defer close(w.done)
+		version, held := now.Version, now.Apps
+		redial := redialFirst
+		for {
+			var ans appChanges
+			path := "/apps/ext/changes?" + url.Values{"after": {strconv.FormatUint(version, 10)}, "timeout": {appChangesHold.String()}}.Encode()
+			err := c.do(watchCtx, http.MethodGet, path, nil, &ans)
+			switch {
+			case watchCtx.Err() != nil:
+				return
+			case err == nil:
+				redial = redialFirst
+				if ans.Version <= version {
+					continue
+				}
+				changes := appChangesSince(version, held, ans.Apps)
+				version, held = ans.Version, ans.Apps
+				for _, change := range changes {
+					onChange(change)
+				}
+			case notReady(err):
+				if c.WaitReady(watchCtx, PhaseReady) != nil {
+					return
+				}
+			default:
+				slog.Error("asking core for the app changes failed; asking again", "retry_in", redial, "error", err)
+				if sleepCtx(watchCtx, redial) != nil {
+					return
+				}
+				redial = min(2*redial, redialMax)
+			}
 		}
-	})
-	return ps, nil
+	}()
+	return w, nil
+}
+
+// appChangesSince is what changed from held, the apps at version after, to
+// now: each app now there that was not, or whose version is past after, is
+// registered; each held app not there now is removed.
+func appChangesSince(after uint64, held, now []appVersion) []AppChange {
+	was := make(map[string]bool, len(held))
+	for _, a := range held {
+		was[a.Name] = true
+	}
+	var changes []AppChange
+	for _, a := range now {
+		if a.Version > after || !was[a.Name] {
+			changes = append(changes, AppChange{App: a.Name, Change: "registered"})
+		}
+		delete(was, a.Name)
+	}
+	gone := make([]string, 0, len(was))
+	for name := range was {
+		gone = append(gone, name)
+	}
+	sort.Strings(gone)
+	for _, name := range gone {
+		changes = append(changes, AppChange{App: name, Change: "removed"})
+	}
+	return changes
 }
