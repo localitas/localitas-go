@@ -157,7 +157,7 @@ func (c *localitasConn) Begin() (driver.Tx, error) {
 // BeginTx starts a transaction whose statements are sent together on
 // Commit, under the precondition WithUnlessExists put on ctx, if any.
 func (c *localitasConn) BeginTx(ctx context.Context, _ driver.TxOptions) (driver.Tx, error) {
-	tx := &localitasTx{conn: c}
+	tx := &localitasTx{conn: c, ctx: ctx}
 	if u, ok := ctx.Value(unlessExistsKey{}).(SQLStatement); ok {
 		tx.unlessExists = &u
 	}
@@ -183,7 +183,10 @@ func WithUnlessExists(ctx context.Context, query string, args ...any) context.Co
 }
 
 type localitasTx struct {
-	conn         *localitasConn
+	conn *localitasConn
+	// ctx is the context the transaction began with: database/sql's Commit
+	// takes none, so the commit, which sends every statement, ends with it.
+	ctx          context.Context
 	stmts        []SQLStatement
 	unlessExists *SQLStatement
 }
@@ -200,10 +203,10 @@ func (tx *localitasTx) Commit() error {
 	stmts := tx.stmts
 	tx.stmts = nil
 	if tx.unlessExists == nil {
-		_, err := tx.conn.client.SQLTransaction(context.Background(), tx.conn.dbID, stmts)
+		_, err := tx.conn.client.SQLTransaction(tx.ctx, tx.conn.dbID, stmts)
 		return err
 	}
-	res, err := tx.conn.client.SQLTransactionUnlessExists(context.Background(), tx.conn.dbID, *tx.unlessExists, stmts)
+	res, err := tx.conn.client.SQLTransactionUnlessExists(tx.ctx, tx.conn.dbID, *tx.unlessExists, stmts)
 	if err != nil {
 		return err
 	}
