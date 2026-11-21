@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -167,7 +169,43 @@ func (s HTTPNodeSettings) validate() error {
 	case s.App != nil:
 		return s.App.validate()
 	}
+	return checkCallURL(s.URL)
+}
+
+// checkCallURL accepts what core does in an http-api node's url: a core
+// path ("/apps/..."), called on the node running the step, or an absolute
+// http(s) URL of another machine. A URL naming the machine using it
+// (loopback, its own name) is refused: stored in a replicated automation,
+// it sends whichever node runs the step to itself. An app is called by
+// name, an AppCall. A url still holding a template ({{node.field}}) in
+// place of its scheme or host is checked by core once it is filled in.
+func checkCallURL(raw string) error {
+	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		if strings.Contains(raw, "{{") {
+			return nil
+		}
+		return fmt.Errorf("url %q is neither a path (/apps/...) nor an http(s) URL", raw)
+	}
+	if ownMachine(u.Hostname()) {
+		return fmt.Errorf("url %q names this machine's own address, which sends whichever node runs the step to itself; call an app by name with an AppCall (core's AppRef: app, path %s, protocol http), or core by its path (%s)", raw, u.RequestURI(), u.RequestURI())
+	}
 	return nil
+}
+
+// ownMachine reports whether host only ever means the machine using it: a
+// loopback, unspecified or link-local address, its own name or any name under
+// it (RFC 6761), or a container's host.
+func ownMachine(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "host.docker.internal" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast())
 }
 
 // Count is n as an optional setting (MaxRetries, BackoffMs, Retries,

@@ -98,6 +98,9 @@ var allowedAddressLiterals = map[string][]string{
 	// A container reaches core's machine by Docker's name for it; a loopback
 	// core URL is recognized to be rewritten to it (ContainerURL), not dialed.
 	"core_env.go": {"host.docker.internal", "localhost"},
+	// The names an automation's url may not hold, refused before sending
+	// (ownMachine): never called.
+	"automation_dag.go": {"localhost", ".localhost", "host.docker.internal"},
 }
 
 // No string literal outside the allowlist names a host, a port or a socket
