@@ -30,7 +30,8 @@ type Migration struct {
 //	//go:embed migrations/*.sql
 //	var migrationsFS embed.FS
 //
-//	db, _ := sql.Open("localitas", "http://localhost:8080?database_id=sys_myapp&token=...")
+//	c, _ := client.Default()
+//	db, _ := c.DB(ctx, "myapp")
 //	m, _ := client.NewMigrator(db, migrationsFS, "myapp")
 //	m.Run(context.Background())
 type Migrator struct {
