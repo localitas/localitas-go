@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -91,9 +92,12 @@ var guessedAddresses = []string{"8090", "8080", "localhost", "127.0.0.1", "host.
 
 // allowedAddressLiterals are the SDK's own addresses that are not guesses,
 // by file and literal.
-var allowedAddressLiterals = map[string]string{
+var allowedAddressLiterals = map[string][]string{
 	// The app tells core where it listens on its own machine (Announce).
-	"announce.go": "http://localhost:%d",
+	"announce.go": {"http://localhost:%d"},
+	// A container reaches core's machine by Docker's name for it; a loopback
+	// core URL is recognized to be rewritten to it (ContainerURL), not dialed.
+	"core_env.go": {"host.docker.internal", "localhost"},
 }
 
 // No string literal outside the allowlist names a host, a port or a socket
@@ -121,7 +125,7 @@ func TestNoGuessedAddressesInSource(t *testing.T) {
 				return true
 			}
 			for _, g := range guessedAddresses {
-				if strings.Contains(s, g) && allowedAddressLiterals[name] != s {
+				if strings.Contains(s, g) && !slices.Contains(allowedAddressLiterals[name], s) {
 					t.Errorf("%s: literal %q names an address (%s)", name, s, g)
 				}
 			}

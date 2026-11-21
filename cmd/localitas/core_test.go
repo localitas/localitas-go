@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	client "github.com/localitas/localitas-go"
@@ -44,6 +45,35 @@ func TestCoreClient_ReachesTheCoreThroughItsCoreEnv(t *testing.T) {
 		if auth := <-got; auth != "Bearer lt_node" {
 			t.Fatalf("core got %q, want the node's token", auth)
 		}
+	}
+}
+
+// core-env prints what core gives a process of its machine: as a container
+// reaches it (start-docker's --env-file) or as a native process does.
+func TestCoreEnv_PrintsTheEnvironmentForEachVantage(t *testing.T) {
+	home := t.TempDir()
+	if err := client.WriteCoreEnv(home, "http://127.0.0.1:8190", "lt_node"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CORE_URL", "")
+	t.Setenv("LOCALITAS_API_TOKEN", "")
+	t.Setenv("LOCALITAS_HOME", home)
+	for args, want := range map[string]string{
+		"--for container": "CORE_URL=http://host.docker.internal:8190\nLOCALITAS_API_TOKEN=lt_node\n",
+		"--for=native":    "CORE_URL=http://127.0.0.1:8190\nLOCALITAS_API_TOKEN=lt_node\n",
+		"":                "CORE_URL=http://127.0.0.1:8190\nLOCALITAS_API_TOKEN=lt_node\n",
+	} {
+		var out strings.Builder
+		if err := coreEnvCommand(strings.Fields(args), &out); err != nil {
+			t.Fatalf("core-env %s: %v", args, err)
+		}
+		if out.String() != want {
+			t.Errorf("core-env %s = %q, want %q", args, out.String(), want)
+		}
+	}
+	t.Setenv("LOCALITAS_HOME", t.TempDir())
+	if err := coreEnvCommand([]string{"--for", "container"}, &strings.Builder{}); err == nil {
+		t.Fatal("core-env with no core found printed an environment")
 	}
 }
 

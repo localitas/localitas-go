@@ -65,6 +65,11 @@ func main() {
 		sqlCommand(args[1:])
 	case "cluster":
 		clusterCommand(args[1:])
+	case "core-env":
+		if err := coreEnvCommand(args[1:], os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		printUsage()
 		os.Exit(1)
@@ -85,6 +90,9 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  migrate run          Run all pending migrations")
 	fmt.Fprintln(os.Stderr, "  sql <db> [stmt]      Run SQL on a database (sys_<app> for a core app's); reads stdin without stmt")
 	fmt.Fprintln(os.Stderr, "  cluster force-active Make this node the active when the cluster lost its majority")
+	fmt.Fprintln(os.Stderr, "  core-env [--for native|container]")
+	fmt.Fprintln(os.Stderr, "                       Print CORE_URL and LOCALITAS_API_TOKEN of this machine's core, as a")
+	fmt.Fprintln(os.Stderr, "                       process here (native) or a container here (container) reaches it")
 }
 
 func printMigrateUsage() {
@@ -292,19 +300,27 @@ func newClient() *client.Client {
 	return c
 }
 
-// coreClient is the client of the core whose config file is at config
-// (the core.env it writes beside it), or without one the client every
-// process builds (client.Default): an app's environment, else this
-// machine's core in $LOCALITAS_HOME or ~/.localitas.
+// coreClient is the client of the core coreAddress names.
 func coreClient(config string) (*client.Client, error) {
-	if config == "" {
-		return client.Default()
-	}
-	u, token, err := client.CoreAt(filepath.Dir(config))
+	u, token, err := coreAddress(config)
 	if err != nil {
 		return nil, err
 	}
 	return client.New(u).WithToken(token), nil
+}
+
+// coreAddress is the URL and token of the core whose config file is at
+// config (the core.env it writes beside it), or without one what every
+// process uses (client.Default): an app's environment, else this machine's
+// core in $LOCALITAS_HOME or ~/.localitas.
+func coreAddress(config string) (string, string, error) {
+	if config != "" {
+		return client.CoreAt(filepath.Dir(config))
+	}
+	if _, err := client.Default(); err != nil {
+		return "", "", err
+	}
+	return client.DefaultCoreURL(), client.DefaultToken(), nil
 }
 
 func detectAppName() string {

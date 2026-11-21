@@ -208,6 +208,23 @@ func TestCoreEnv_NamesWhatDefaultReads(t *testing.T) {
 	}
 }
 
+// A container on core's machine reaches core's loopback URL through
+// Docker's name for the host, on the same port; other URLs stay.
+func TestContainerURL_LoopbackBecomesTheContainersHost(t *testing.T) {
+	for in, want := range map[string]string{
+		"http://127.0.0.1:8090":         "http://host.docker.internal:8090",
+		"http://localhost:9090/":        "http://host.docker.internal:9090/",
+		"http://[::1]:8190":             "http://host.docker.internal:8190",
+		"https://family.localitas.test": "https://family.localitas.test",
+		"http://192.168.1.20:8090":      "http://192.168.1.20:8090",
+		"":                              "",
+	} {
+		if got := ContainerURL(in); got != want {
+			t.Errorf("ContainerURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // A tool told a core's home that has no core.env fails naming the file.
 func TestCoreAt_MissingFileNamesIt(t *testing.T) {
 	home := t.TempDir()

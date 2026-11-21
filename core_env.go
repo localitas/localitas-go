@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -41,6 +42,30 @@ func CoreEnv(coreURL, token string) []string {
 		env = append(env, TokenVar+"="+token)
 	}
 	return env
+}
+
+// ContainerHost is the name by which a container reaches the machine it
+// runs on (Docker gives it to every container core or start-docker runs).
+const ContainerHost = "host.docker.internal"
+
+// ContainerURL is coreURL as a container on core's machine reaches it: a
+// loopback host (core's own URL, as core.env holds it) becomes
+// ContainerHost, the port kept; any other URL is reachable as it is.
+func ContainerURL(coreURL string) string {
+	u, err := url.Parse(coreURL)
+	if err != nil || u.Host == "" {
+		return coreURL
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return coreURL
+	}
+	port := u.Port()
+	u.Host = ContainerHost
+	if port != "" {
+		u.Host = net.JoinHostPort(ContainerHost, port)
+	}
+	return u.String()
 }
 
 // Home is the home of the core this process belongs to: $LOCALITAS_HOME,
