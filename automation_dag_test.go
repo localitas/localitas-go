@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -93,6 +94,35 @@ func TestAutomationRequest_PriorityAndPubSubSensor(t *testing.T) {
 	}
 }
 
+// loopbackURLs name the machine using them: core refuses each in an
+// http-api node's url, as it sends whichever node runs the step to itself.
+var loopbackURLs = []string{
+	"http://localhost:9204/api/sync",
+	"http://LOCALHOST:8090/apps/faas/fn/report",
+	"http://127.0.0.2:9204/api/sync",
+	"http://[::1]:8090/apps/notes/api/notes",
+	"http://0.0.0.0:9204/api/sync",
+}
+
+// A url naming this machine is refused before anything is sent, naming the
+// fix; a core path, another machine and a template are sent.
+func TestHTTPNode_ALoopbackURLIsRefusedForAnAppCall(t *testing.T) {
+	for _, raw := range loopbackURLs {
+		req := fixtureRequest()
+		req.DAGConfig.Nodes[0] = HTTPNode("fetch", StrategyAnyNode, HTTPNodeSettings{URL: raw})
+		if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "AppCall") || !strings.Contains(err.Error(), "AppRef") {
+			t.Errorf("%s: %v, want refused naming AppCall", raw, err)
+		}
+	}
+	for _, raw := range []string{"/apps/faas/fn/report", "https://hooks.example.com/done", "http://192.168.1.50:8080/hook", "{{lookup.response.url}}"} {
+		req := fixtureRequest()
+		req.DAGConfig.Nodes[0] = HTTPNode("fetch", StrategyAnyNode, HTTPNodeSettings{URL: raw})
+		if err := req.Validate(); err != nil {
+			t.Errorf("%s: %v, want sent", raw, err)
+		}
+	}
+}
+
 func TestAutomationRequest_ValidateRefusesWhatCoreWould(t *testing.T) {
 	bad := map[string]func(*CreateAutomationRequest){
 		"strategy":       func(r *CreateAutomationRequest) { r.DAGConfig.Nodes[0].ExecutionStrategy = "everywhere" },
@@ -118,6 +148,14 @@ func TestAutomationRequest_ValidateRefusesWhatCoreWould(t *testing.T) {
 		"app path": func(r *CreateAutomationRequest) {
 			r.DAGConfig.Nodes[0] = HTTPNode("x", StrategyAnyNode, HTTPNodeSettings{App: &AppCall{App: "a", Path: "http://a.test/b", Protocol: AppProtocolHTTP}})
 		},
+		"not a url": func(r *CreateAutomationRequest) {
+			r.DAGConfig.Nodes[0] = HTTPNode("fetch", StrategyAnyNode, HTTPNodeSettings{URL: "ftp://a.test/b"})
+		},
+	}
+	for _, raw := range loopbackURLs {
+		bad["url "+raw] = func(r *CreateAutomationRequest) {
+			r.DAGConfig.Nodes[0] = HTTPNode("fetch", StrategyAnyNode, HTTPNodeSettings{URL: raw})
+		}
 	}
 	for name, spoil := range bad {
 		req := fixtureRequest()
