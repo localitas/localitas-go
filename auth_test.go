@@ -17,7 +17,16 @@ const testAPIToken = "lt_test_cluster_token"
 
 func TestMain(m *testing.M) {
 	restoreTestIdentity()
-	os.Exit(m.Run())
+	// No test reaches the core of the machine running it through its
+	// core.env: the home is empty unless a test writes one.
+	home, err := os.MkdirTemp("", "localitas-home-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv(HomeVar, home)
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
 }
 
 // restoreTestIdentity pins the keys tests verify with, so no test asks a

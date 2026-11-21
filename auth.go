@@ -164,7 +164,7 @@ func fetchIdentityKey() {
 		return
 	}
 	identity.lastFetch = time.Now()
-	core, err := coreURLFromEnv()
+	core, err := resolveCore().checkedURL()
 	if err != nil {
 		return
 	}

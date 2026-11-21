@@ -75,7 +75,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: localitas [--config <path>] <command>")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Flags:")
-	fmt.Fprintln(os.Stderr, "  --config <path>      Path to config file (default: ~/.localitas/config-core.yaml)")
+	fmt.Fprintln(os.Stderr, "  --config <path>      Config file of the core to reach, through the core.env it writes beside it")
+	fmt.Fprintln(os.Stderr, "                       (default: CORE_URL and LOCALITAS_API_TOKEN, else $LOCALITAS_HOME/core.env, else ~/.localitas/core.env)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  migrate new <name>   Create a new migration file")
@@ -226,20 +227,6 @@ func migrateStatus() {
 	fmt.Printf("\n%d applied, %d pending\n", len(files)-pending, pending)
 }
 
-func coreURL() string {
-	if configPath != "" {
-		return client.CoreURLFromConfig(configPath)
-	}
-	return client.DefaultCoreURL()
-}
-
-func coreToken() string {
-	if configPath != "" {
-		return client.TokenFromConfig(configPath)
-	}
-	return client.DefaultToken()
-}
-
 func migrateRun() {
 	appName := detectAppName()
 	dbID := "sys_" + appName
@@ -297,10 +284,27 @@ func migrateRun() {
 }
 
 func newClient() *client.Client {
-	if configPath != "" {
-		return client.New(client.CoreURLFromConfig(configPath)).WithToken(client.TokenFromConfig(configPath))
+	c, err := coreClient(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
-	return client.New(client.DefaultCoreURL()).WithToken(client.DefaultToken())
+	return c
+}
+
+// coreClient is the client of the core whose config file is at config
+// (the core.env it writes beside it), or without one the client every
+// process builds (client.Default): an app's environment, else this
+// machine's core in $LOCALITAS_HOME or ~/.localitas.
+func coreClient(config string) (*client.Client, error) {
+	if config == "" {
+		return client.Default()
+	}
+	u, token, err := client.CoreAt(filepath.Dir(config))
+	if err != nil {
+		return nil, err
+	}
+	return client.New(u).WithToken(token), nil
 }
 
 func detectAppName() string {

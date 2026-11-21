@@ -5,8 +5,10 @@
 // never stores credentials or validates tokens — that is the responsibility of
 // the upstream reverse proxy.
 //
-// Quick start, in an app core runs (core sets CORE_URL and
-// LOCALITAS_API_TOKEN for every app, container or native):
+// Quick start, in any app, container or native: core sets CORE_URL and
+// LOCALITAS_API_TOKEN for every app it starts, and writes both to core.env
+// in its home (~/.localitas, or $LOCALITAS_HOME) for the other processes of
+// its machine, such as an app launchd runs:
 //
 //	c, err := client.Default()
 //	secrets, _ := c.VaultGetSecrets(ctx, "my-credential-id")
@@ -36,52 +38,33 @@ import (
 )
 
 // ErrNoCoreURL is the error of Default, and of every call of a client that
-// was given no core URL, when CORE_URL is not set.
-var ErrNoCoreURL = errors.New("CORE_URL is not set: core sets it for every app it runs; outside core pass the URL to client.New")
+// was given no core URL, when neither the environment nor the core's home
+// says where core is.
+var ErrNoCoreURL = errors.New("CORE_URL is not set: core sets it for every app it starts and writes it to " + CoreEnvFile + " in its home ($" + HomeVar + ", else ~/.localitas) for the other processes of its machine; outside core pass the URL to client.New")
 
-// Default is the client of an app core runs: core's URL from CORE_URL and
-// the app's API token from LOCALITAS_API_TOKEN, both of which core sets for
-// every app it starts. It fails, naming the variable, when either is
-// missing or CORE_URL is not an http(s) URL; it never guesses an address.
+// Default is the client of an app: core's URL (CORE_URL) and the app's API
+// token (LOCALITAS_API_TOKEN), each from the environment, which core sets
+// for every app it starts (containers, FaaS functions), else from the
+// core.env core writes in its home for the processes of its machine
+// (natively run apps, tools). It fails, naming the variable and the file,
+// when either is missing or the URL is not an http(s) URL; it never
+// guesses an address.
 func Default() (*Client, error) {
-	base, err := coreURLFromEnv()
+	s := resolveCore()
+	base, err := s.checkedURL()
 	if err != nil {
 		return nil, err
 	}
-	token := os.Getenv("LOCALITAS_API_TOKEN")
-	if token == "" {
-		return nil, errors.New("LOCALITAS_API_TOKEN is not set: core sets it for every app it runs; outside core pass a token to WithToken")
+	if s.token == "" {
+		return nil, fmt.Errorf("%s is not set: core sets it for every app it starts and writes it to %s for the other processes of its machine; outside core pass a token to WithToken", TokenVar, s.file)
 	}
-	return New(base).WithToken(token), nil
+	return New(base).WithToken(s.token), nil
 }
 
-// coreURLFromEnv is CORE_URL, checked to be an http(s) URL.
-func coreURLFromEnv() (string, error) {
-	raw := os.Getenv("CORE_URL")
-	if raw == "" {
-		return "", ErrNoCoreURL
-	}
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return "", fmt.Errorf("CORE_URL %q is not an http(s) URL of core", raw)
-	}
-	return raw, nil
-}
-
-// DefaultToken is the app's API token: LOCALITAS_API_TOKEN, else the one in
-// ~/.localitas/config-core.yaml (core.auth.api_token, starting "lt_"). Apps
-// use Default instead: reading core's config file assumes the app runs on
-// core's machine, and core gives every app LOCALITAS_API_TOKEN. Kept for the
-// apps and tools that read it until the cleanup slice.
+// DefaultToken is the API token Default uses (LOCALITAS_API_TOKEN, else
+// the home's core.env), or "" when there is none.
 func DefaultToken() string {
-	if t := os.Getenv("LOCALITAS_API_TOKEN"); t != "" {
-		return t
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return TokenFromConfig(home + "/.localitas/config-core.yaml")
+	return resolveCore().token
 }
 
 // TokenFromConfig reads the API token from the given config file path.
@@ -108,35 +91,16 @@ func readAPITokenFromConfig(path string) string {
 	return ""
 }
 
-// DefaultCoreURL is CORE_URL, or "" when it is not set: a client given ""
-// fails every call with ErrNoCoreURL instead of guessing where core is.
-// Apps use Default, which also checks the URL and the token; this is kept
-// until the cleanup slice.
+// DefaultCoreURL is the core URL Default uses (CORE_URL, else the home's
+// core.env), or "" when there is none or it is not an http(s) URL: a
+// client given "" fails every call with ErrNoCoreURL instead of guessing
+// where core is.
 func DefaultCoreURL() string {
-	return os.Getenv("CORE_URL")
-}
-
-// CoreURLFromConfig is the URL of the core whose config file is at path,
-// for operator tools on that core's machine: its own node over loopback at
-// the config's http_port. Without a readable http_port it is
-// DefaultCoreURL().
-func CoreURLFromConfig(path string) string {
-	data, err := os.ReadFile(path)
+	u, err := resolveCore().checkedURL()
 	if err != nil {
-		return DefaultCoreURL()
+		return ""
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "http_port:") {
-			val := strings.TrimPrefix(trimmed, "http_port:")
-			val = strings.TrimSpace(val)
-			val = strings.Trim(val, "\"'")
-			if port, err := strconv.Atoi(val); err == nil && port > 0 {
-				return (&url.URL{Scheme: "http", Host: "127.0.0.1:" + strconv.Itoa(port)}).String()
-			}
-		}
-	}
-	return DefaultCoreURL()
+	return u
 }
 
 func isContainer() bool {
@@ -187,8 +151,9 @@ func newDefaultHTTPClient(headerTimeout time.Duration) *http.Client {
 	return &http.Client{Transport: transport}
 }
 
-// New creates a Client bound to the given base URL (e.g. "http://localhost:8090").
-// The returned client has no token set — call WithToken before making authenticated requests.
+// New creates a Client bound to core's base URL, for code that is told it
+// (an app uses Default). The returned client has no token set — call
+// WithToken before making authenticated requests.
 func New(baseURL string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),

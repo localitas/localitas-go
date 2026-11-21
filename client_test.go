@@ -23,6 +23,7 @@ func TestDefaultCoreURL_UsesCoreURLEnv(t *testing.T) {
 
 func TestDefaultCoreURL_NeverGuesses(t *testing.T) {
 	t.Setenv("CORE_URL", "")
+	t.Setenv("LOCALITAS_HOME", t.TempDir())
 	if u := DefaultCoreURL(); u != "" {
 		t.Fatalf("DefaultCoreURL without CORE_URL = %q, want none rather than a guess", u)
 	}
@@ -37,29 +38,18 @@ func TestIsContainer_NonLinux(t *testing.T) {
 	}
 }
 
-func TestDefaultToken_ReadsConfig(t *testing.T) {
-	dir := t.TempDir()
-	configDir := filepath.Join(dir, ".localitas")
-	os.MkdirAll(configDir, 0755)
-	os.WriteFile(filepath.Join(configDir, "config-core.yaml"), []byte("core:\n  auth:\n    api_token: lt_from_config\n"), 0600)
-	t.Setenv("LOCALITAS_API_TOKEN", "")
-
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", origHome)
-
-	token := DefaultToken()
-	if token != "lt_from_config" {
+func TestTokenFromConfig_ReadsCoresConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config-core.yaml")
+	os.WriteFile(path, []byte("core:\n  auth:\n    api_token: lt_from_config\n"), 0600)
+	if token := TokenFromConfig(path); token != "lt_from_config" {
 		t.Fatalf("expected lt_from_config, got %q", token)
 	}
 }
 
 func TestDefaultToken_MissingFile(t *testing.T) {
 	t.Setenv("LOCALITAS_API_TOKEN", "")
-	dir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", origHome)
+	t.Setenv("LOCALITAS_HOME", "")
+	t.Setenv("HOME", t.TempDir())
 
 	token := DefaultToken()
 	if token != "" {

@@ -23,6 +23,7 @@ import (
 
 func TestDefault_WithoutCoreURLFailsClearly(t *testing.T) {
 	t.Setenv("CORE_URL", "")
+	t.Setenv("LOCALITAS_HOME", t.TempDir())
 	t.Setenv("LOCALITAS_API_TOKEN", "lt_app")
 	_, err := Default()
 	if !errors.Is(err, ErrNoCoreURL) || !strings.Contains(err.Error(), "CORE_URL") {
@@ -32,6 +33,7 @@ func TestDefault_WithoutCoreURLFailsClearly(t *testing.T) {
 
 func TestDefault_WithoutTokenFailsClearly(t *testing.T) {
 	t.Setenv("CORE_URL", "http://core.test:1234")
+	t.Setenv("LOCALITAS_HOME", t.TempDir())
 	t.Setenv("LOCALITAS_API_TOKEN", "")
 	if _, err := Default(); err == nil || !strings.Contains(err.Error(), "LOCALITAS_API_TOKEN") {
 		t.Fatalf("Default() without a token = %v, want an error naming LOCALITAS_API_TOKEN", err)
@@ -73,6 +75,7 @@ func TestDefault_UsesCoreURLAndToken(t *testing.T) {
 // never a request to a guessed or relative address.
 func TestNoCoreURL_EveryCallFailsClearly(t *testing.T) {
 	t.Setenv("CORE_URL", "")
+	t.Setenv("LOCALITAS_HOME", t.TempDir())
 	c := New(DefaultCoreURL()).WithToken("lt_app")
 	if _, err := c.ListDatabases(context.Background()); !errors.Is(err, ErrNoCoreURL) {
 		t.Fatalf("call with no core URL = %v, want ErrNoCoreURL", err)
@@ -91,9 +94,6 @@ var guessedAddresses = []string{"8090", "8080", "localhost", "127.0.0.1", "host.
 var allowedAddressLiterals = map[string]string{
 	// The app tells core where it listens on its own machine (Announce).
 	"announce.go": "http://localhost:%d",
-	// An operator tool on core's machine reaches that node at the port its
-	// config file names (CoreURLFromConfig): read, not guessed.
-	"client.go": "127.0.0.1:",
 }
 
 // No string literal outside the allowlist names a host, a port or a socket
