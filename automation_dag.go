@@ -197,11 +197,11 @@ func checkCallURL(raw string) error {
 }
 
 // ownMachine reports whether host only ever means the machine using it: a
-// loopback, unspecified or link-local address, its own name, or a
-// container's host.
+// loopback, unspecified or link-local address, its own name or any name under
+// it (RFC 6761), or a container's host.
 func ownMachine(host string) bool {
-	host = strings.ToLower(host)
-	if host == "localhost" || host == "host.docker.internal" {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "host.docker.internal" {
 		return true
 	}
 	ip := net.ParseIP(host)

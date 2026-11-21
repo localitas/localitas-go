@@ -102,6 +102,8 @@ var loopbackURLs = []string{
 	"http://127.0.0.2:9204/api/sync",
 	"http://[::1]:8090/apps/notes/api/notes",
 	"http://0.0.0.0:9204/api/sync",
+	"http://localhost.:8090/apps/faas/fn/report",
+	"http://notes.localhost:8090/apps/notes/api/notes",
 }
 
 // A url naming this machine is refused before anything is sent, naming the
