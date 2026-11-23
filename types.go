@@ -1,6 +1,9 @@
 package client
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Database represents a user-owned or system database in the data app.
 type Database struct {
@@ -43,13 +46,40 @@ type Table struct {
 	UpdatedAt  time.Time         `json:"updated_at"`
 }
 
-// Row represents a single row in a table.
+// Row represents a single row in a table: each column's value by name.
 type Row struct {
-	ID        string                 `json:"id"`
-	TableID   string                 `json:"table_id"`
-	Values    map[string]interface{} `json:"values"`
-	CreatedAt time.Time              `json:"created_at"`
-	UpdatedAt time.Time              `json:"updated_at"`
+	ID        string              `json:"id"`
+	TableID   string              `json:"table_id"`
+	Values    map[string]SQLValue `json:"values"`
+	CreatedAt time.Time           `json:"created_at"`
+	UpdatedAt time.Time           `json:"updated_at"`
+}
+
+// databaseNameRequest is the body that creates a database.
+type databaseNameRequest struct {
+	Name string `json:"name"`
+}
+
+// databaseMigrationRequest is the body that applies a database migration.
+type databaseMigrationRequest struct {
+	Description string `json:"description"`
+	DownSQL     string `json:"down_sql"`
+	UpSQL       string `json:"up_sql"`
+	Version     string `json:"version"`
+}
+
+// RowValues is the body that inserts a row or updates one's columns.
+type RowValues struct {
+	Values map[string]SQLValue `json:"values"`
+}
+
+// ShellExecuteRequest is the body of the shell app's execute endpoint: Python
+// code run with each variable bound to its JSON value, after the pip
+// requirements are installed.
+type ShellExecuteRequest struct {
+	Code         string                     `json:"code"`
+	Variables    map[string]json.RawMessage `json:"variables,omitempty"`
+	Requirements []string                   `json:"requirements,omitempty"`
 }
 
 // DatabaseMigration represents a schema migration applied to a database.
@@ -81,12 +111,6 @@ type SearchResponse struct {
 	// Mode indicates how the search was executed ("fts").
 	Mode    string             `json:"mode"`
 	Results []SearchIndexEntry `json:"results"`
-}
-
-// SearchRowsResponse contains raw row data from a search.
-type SearchRowsResponse struct {
-	Rows  []map[string]interface{} `json:"rows"`
-	Total int64                    `json:"total"`
 }
 
 // SQLStatement represents a single SQL statement with optional bind arguments,
