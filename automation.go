@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,15 +18,16 @@ func (c *Client) Automation() *AutomationClient {
 }
 
 type AutomationRun struct {
-	ID           string                 `json:"id"`
-	AutomationID string                 `json:"automation_id"`
-	Status       string                 `json:"status"`
-	TriggeredBy  string                 `json:"triggered_by"`
-	StartedAt    *time.Time             `json:"started_at,omitempty"`
-	CompletedAt  *time.Time             `json:"completed_at,omitempty"`
-	DurationMs   int64                  `json:"duration_ms,omitempty"`
-	Error        string                 `json:"error,omitempty"`
-	Result       map[string]interface{} `json:"result,omitempty"`
+	ID           string     `json:"id"`
+	AutomationID string     `json:"automation_id"`
+	Status       string     `json:"status"`
+	TriggeredBy  string     `json:"triggered_by"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+	DurationMs   int64      `json:"duration_ms,omitempty"`
+	Error        string     `json:"error,omitempty"`
+	// Result is the run's result, any JSON value; nil when it has none.
+	Result json.RawMessage `json:"result,omitempty"`
 	// CompletionChannel is the automations cache channel core hints this
 	// run's end on, once and best-effort: its owner's own channel, which
 	// only they read. WaitForRun does not depend on the hint.
@@ -85,10 +87,10 @@ func (a *AutomationClient) GetRun(ctx context.Context, runID string) (*Automatio
 
 // runOutcome is what a run's completion carries.
 type runOutcome struct {
-	Status         string `json:"status"`
-	Result         any    `json:"result,omitempty"`
-	Error          string `json:"error"`
-	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	Status         string          `json:"status"`
+	Result         json.RawMessage `json:"result,omitempty"`
+	Error          string          `json:"error"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 }
 
 // IdempotencyKeyHeader names the try core calls an app for:
@@ -109,10 +111,10 @@ func AsyncCallFrom(r *http.Request) AsyncCall {
 }
 
 // PublishResult completes run runID with status ("completed" when empty),
-// the work's result (a value that encodes to a JSON object, such as a
-// struct, or nil) and, for a failure, its error. It names no try: prefer
+// the work's encoded result (any JSON value: object, list, string, number;
+// nil for none) and, for a failure, its error. It names no try: prefer
 // Complete with the AsyncCall, which core restricts to the try it called.
-func (a *AutomationClient) PublishResult(ctx context.Context, runID string, status string, result any, errMsg string) error {
+func (a *AutomationClient) PublishResult(ctx context.Context, runID string, status string, result json.RawMessage, errMsg string) error {
 	return a.Complete(ctx, AsyncCall{RunID: runID}, status, result, errMsg)
 }
 
@@ -120,7 +122,7 @@ func (a *AutomationClient) PublishResult(ctx context.Context, runID string, stat
 // Idempotency-Key, so core ends that try and refuses the completion (409)
 // once the try no longer waits for it: a zombie's late result is not
 // recorded.
-func (a *AutomationClient) Complete(ctx context.Context, call AsyncCall, status string, result any, errMsg string) error {
+func (a *AutomationClient) Complete(ctx context.Context, call AsyncCall, status string, result json.RawMessage, errMsg string) error {
 	if status == "" {
 		status = "completed"
 	}
