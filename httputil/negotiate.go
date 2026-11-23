@@ -69,11 +69,40 @@ func writeYAML(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/yaml")
 	w.WriteHeader(status)
 
-	yamlBytes, err := yaml.Marshal(data)
+	yamlBytes, err := yamlOf(data)
 	if err != nil {
 		return
 	}
 	w.Write(yamlBytes)
+}
+
+// yamlOf is data's JSON answer as block YAML: the same keys in the same
+// order and the same values, whatever data's Go type (a struct's fields by
+// their json names, a custom MarshalJSON as it writes itself).
+func yamlOf(data interface{}) ([]byte, error) {
+	j, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(j, &doc); err != nil {
+		return nil, err
+	}
+	blockStyle(&doc)
+	return yaml.Marshal(&doc)
+}
+
+// blockStyle drops the flow and quoting styles JSON's syntax gave n and its
+// children: the encoder quotes a string only where YAML needs it, and an
+// empty collection stays flow ({} or []), its only form.
+func blockStyle(n *yaml.Node) {
+	if (n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode) && len(n.Content) == 0 {
+		return
+	}
+	n.Style = 0
+	for _, c := range n.Content {
+		blockStyle(c)
+	}
 }
 
 func writeMarkdown(w http.ResponseWriter, status int, data interface{}) {
