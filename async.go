@@ -14,10 +14,11 @@ const AutomationRunIDHeader = "Localitas-Automation-Run-ID"
 
 // RunAsync runs work after answering 202 when core's automation called with
 // a run ID, and publishes its outcome to the run: the work's own result type
-// on success (it must encode to a JSON object, as a struct does), its error
-// on failure. The completion echoes the call's Idempotency-Key, so core
-// ends the try it called and no other. Core times the run itself. Without a
-// run ID it returns false and the handler answers the call itself.
+// on success (any value that encodes to JSON: object, list, string, number),
+// its error on failure, or a failure saying the result could not be encoded.
+// The completion echoes the call's Idempotency-Key, so core ends the try it
+// called and no other. Core times the run itself. Without a run ID it
+// returns false and the handler answers the call itself.
 func RunAsync[T any](c *Client, w http.ResponseWriter, r *http.Request, work func(ctx context.Context) (T, error)) bool {
 	if c == nil {
 		return false
@@ -33,7 +34,12 @@ func RunAsync[T any](c *Client, w http.ResponseWriter, r *http.Request, work fun
 			c.publishCompletion(call, "failed", nil, err.Error())
 			return
 		}
-		c.publishCompletion(call, "completed", result, "")
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			c.publishCompletion(call, "failed", nil, fmt.Sprintf("result could not be encoded: %v", err))
+			return
+		}
+		c.publishCompletion(call, "completed", encoded, "")
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -61,7 +67,7 @@ const (
 // publishCompletion reports a run's outcome, retrying a publish that failed
 // for a reason that may pass (a 5xx, a dropped connection): a run whose
 // completion never arrives stays running until its caller times out.
-func (c *Client) publishCompletion(call AsyncCall, status string, result any, errMsg string) {
+func (c *Client) publishCompletion(call AsyncCall, status string, result json.RawMessage, errMsg string) {
 	runID := call.RunID
 	backoff := publishFirstBackoff
 	for attempt := 1; ; attempt++ {
