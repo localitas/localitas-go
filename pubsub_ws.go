@@ -213,7 +213,8 @@ func (ps *PubSubWS) Ack(channel, group string, seq int64) {
 
 // On registers an event listener. Supported events: "connected",
 // "disconnected", "error", "reconnecting", "message", "published",
-// "subscribed", "unsubscribed", "acked".
+// "subscribed", "unsubscribed", "acked". A "reconnecting" listener
+// receives a PubSubReconnect.
 func (ps *PubSubWS) On(event string, callback func(interface{})) {
 	ps.mu.Lock()
 	ps.listeners[event] = append(ps.listeners[event], callback)
@@ -352,6 +353,13 @@ func (ps *PubSubWS) readLoop(conn *websocket.Conn) {
 	}
 }
 
+// PubSubReconnect is what a "reconnecting" listener receives: the attempt
+// about to be made and how long the client waits before making it.
+type PubSubReconnect struct {
+	Attempt int
+	Delay   time.Duration
+}
+
 // scheduleReconnect waits with exponential backoff then reconnects.
 func (ps *PubSubWS) scheduleReconnect() {
 	ps.mu.Lock()
@@ -369,10 +377,7 @@ func (ps *PubSubWS) scheduleReconnect() {
 	}
 	ps.mu.Unlock()
 
-	ps.emit("reconnecting", map[string]interface{}{
-		"attempt": attempt,
-		"delay":   delay,
-	})
+	ps.emit("reconnecting", PubSubReconnect{Attempt: attempt, Delay: delay})
 
 	time.AfterFunc(delay, func() {
 		ps.mu.Lock()

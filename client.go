@@ -711,11 +711,20 @@ func (c *Client) VaultGetSecrets(ctx context.Context, publicID string) (map[stri
 	return out, nil
 }
 
-// VaultCreateCredential creates a new encrypted credential.
-func (c *Client) VaultCreateCredential(ctx context.Context, name, credURL string, keychainSync bool, data interface{}) (*VaultCredentialSummary, error) {
+// vaultCredentialRequest is the body that creates or replaces a credential.
+type vaultCredentialRequest struct {
+	Data         map[string]string `json:"data"`
+	KeychainSync bool              `json:"keychain_sync"`
+	Name         string            `json:"name"`
+	URL          string            `json:"url"`
+}
+
+// VaultCreateCredential creates a new encrypted credential holding the
+// secret key-value pairs data.
+func (c *Client) VaultCreateCredential(ctx context.Context, name, credURL string, keychainSync bool, data map[string]string) (*VaultCredentialSummary, error) {
 	var out VaultCredentialSummary
-	if err := c.do(ctx, "POST", "/apps/vault/api/credentials", map[string]interface{}{
-		"name": name, "url": credURL, "keychain_sync": keychainSync, "data": data,
+	if err := c.do(ctx, "POST", "/apps/vault/api/credentials", vaultCredentialRequest{
+		Data: data, KeychainSync: keychainSync, Name: name, URL: credURL,
 	}, &out); err != nil {
 		return nil, err
 	}
@@ -723,9 +732,9 @@ func (c *Client) VaultCreateCredential(ctx context.Context, name, credURL string
 }
 
 // VaultUpdateCredential updates an existing credential's name, URL, and secret data.
-func (c *Client) VaultUpdateCredential(ctx context.Context, publicID, name, credURL string, keychainSync bool, data interface{}) error {
-	return c.do(ctx, "PUT", "/apps/vault/api/credentials/"+url.PathEscape(publicID), map[string]interface{}{
-		"name": name, "url": credURL, "keychain_sync": keychainSync, "data": data,
+func (c *Client) VaultUpdateCredential(ctx context.Context, publicID, name, credURL string, keychainSync bool, data map[string]string) error {
+	return c.do(ctx, "PUT", "/apps/vault/api/credentials/"+url.PathEscape(publicID), vaultCredentialRequest{
+		Data: data, KeychainSync: keychainSync, Name: name, URL: credURL,
 	}, nil)
 }
 
@@ -860,13 +869,18 @@ type MetricPoint struct {
 	Timestamp *time.Time `json:"timestamp,omitempty"`
 }
 
+// ingestRequest is the body of a structured metrics ingest.
+type ingestRequest struct {
+	Metrics []MetricPoint `json:"metrics"`
+}
+
 // IngestMetrics sends structured metric points to the TSDB.
 // Returns the number of accepted points.
 func (c *Client) IngestMetrics(ctx context.Context, metrics []MetricPoint) (int, error) {
 	var out struct {
 		Accepted int `json:"accepted"`
 	}
-	if err := c.do(ctx, "POST", "/apps/tsdb/api/ingest", map[string]interface{}{"metrics": metrics}, &out); err != nil {
+	if err := c.do(ctx, "POST", "/apps/tsdb/api/ingest", ingestRequest{Metrics: metrics}, &out); err != nil {
 		return 0, err
 	}
 	return out.Accepted, nil
