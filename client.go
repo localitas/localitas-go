@@ -264,7 +264,7 @@ func (c *Client) ListDatabases(ctx context.Context) ([]Database, error) {
 // CreateDatabase creates a new user-owned database with the given name.
 func (c *Client) CreateDatabase(ctx context.Context, name string) (*Database, error) {
 	var out Database
-	if err := c.do(ctx, "POST", "/apps/data/api/databases", map[string]any{"name": name}, &out); err != nil {
+	if err := c.do(ctx, "POST", "/apps/data/api/databases", databaseNameRequest{Name: name}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -274,7 +274,7 @@ func (c *Client) CreateDatabase(ctx context.Context, name string) (*Database, er
 // Idempotent by name. Requires admin role.
 func (c *Client) CreateSystemDatabase(ctx context.Context, name string) (*Database, error) {
 	var out Database
-	if err := c.do(ctx, "POST", "/apps/data/api/system-dbs", map[string]any{"name": name}, &out); err != nil {
+	if err := c.do(ctx, "POST", "/apps/data/api/system-dbs", databaseNameRequest{Name: name}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -311,12 +311,7 @@ func (c *Client) ListDatabaseMigrations(ctx context.Context, dbID string) ([]Dat
 func (c *Client) ApplyDatabaseMigration(ctx context.Context, dbID, version, description, upSQL, downSQL string) (*DatabaseMigration, error) {
 	var out DatabaseMigration
 	path := fmt.Sprintf("/apps/data/api/databases/%s/migrations", url.PathEscape(dbID))
-	body := map[string]any{
-		"version":     version,
-		"description": description,
-		"up_sql":      upSQL,
-		"down_sql":    downSQL,
-	}
+	body := databaseMigrationRequest{Version: version, Description: description, UpSQL: upSQL, DownSQL: downSQL}
 	if err := c.do(ctx, "POST", path, body, &out); err != nil {
 		return nil, err
 	}
@@ -336,21 +331,21 @@ func (c *Client) ListTables(ctx context.Context, dbID string) ([]Table, error) {
 }
 
 // InsertRow inserts a new row into a table with the given column values.
-func (c *Client) InsertRow(ctx context.Context, dbID, tableID string, values map[string]interface{}) (*Row, error) {
+func (c *Client) InsertRow(ctx context.Context, dbID, tableID string, values map[string]SQLValue) (*Row, error) {
 	var out Row
 	path := fmt.Sprintf("/apps/data/api/databases/%s/tables/%s/rows",
 		url.PathEscape(dbID), url.PathEscape(tableID))
-	if err := c.do(ctx, "POST", path, map[string]any{"values": values}, &out); err != nil {
+	if err := c.do(ctx, "POST", path, RowValues{Values: values}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 // UpdateRow updates an existing row's column values.
-func (c *Client) UpdateRow(ctx context.Context, dbID, tableID, rowID string, values map[string]interface{}) error {
+func (c *Client) UpdateRow(ctx context.Context, dbID, tableID, rowID string, values map[string]SQLValue) error {
 	path := fmt.Sprintf("/apps/data/api/databases/%s/tables/%s/rows/%s",
 		url.PathEscape(dbID), url.PathEscape(tableID), url.PathEscape(rowID))
-	return c.do(ctx, "PUT", path, map[string]any{"values": values}, nil)
+	return c.do(ctx, "PUT", path, RowValues{Values: values}, nil)
 }
 
 // DeleteRow permanently deletes a row by ID.
