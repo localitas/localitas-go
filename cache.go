@@ -88,11 +88,8 @@ func (c *Client) Cache(name string) *CacheRef {
 	return &CacheRef{client: c, name: name}
 }
 
-// cacheEnvelope is the shape every cache data endpoint answers with.
-type cacheEnvelope struct {
-	Result json.RawMessage `json:"result"`
-	Error  string          `json:"error"`
-}
+// cacheEnvelope is a cache answer before its result is decoded.
+type cacheEnvelope = CacheResponse[json.RawMessage]
 
 // cacheDo calls a cache endpoint and decodes the result of its envelope into out.
 func (c *Client) cacheDo(ctx context.Context, method, path string, body, out any) error {
@@ -158,14 +155,10 @@ type cacheValueResult struct {
 	Value string `json:"value"`
 }
 
-type cacheCountResult struct {
-	Value int64 `json:"value"`
-}
-
 // Get returns the value for a key. Returns an APIError with status 404
 // if the key doesn't exist or has expired.
 func (r *CacheRef) Get(ctx context.Context, key string) (string, error) {
-	var out cacheValueResult
+	var out CacheKeyValue
 	if err := r.client.cacheDo(ctx, "GET", r.path("keys", key), nil, &out); err != nil {
 		return "", err
 	}
@@ -177,7 +170,7 @@ func (r *CacheRef) Get(ctx context.Context, key string) (string, error) {
 // which may not yet hold a write made through another node a moment ago.
 // Use it where a stale value is wrong, such as a count of failed logons.
 func (r *CacheRef) GetConsistent(ctx context.Context, key string) (string, error) {
-	var out cacheValueResult
+	var out CacheKeyValue
 	if err := r.client.cacheDo(ctx, "GET", r.path("keys", key)+"?consistent=true", nil, &out); err != nil {
 		return "", err
 	}
@@ -204,7 +197,7 @@ func (r *CacheRef) Incr(ctx context.Context, key string) (int64, error) {
 // IncrBy atomically increments a key's integer value by delta and returns
 // the new value. A delta of 0 reads the value without changing it.
 func (r *CacheRef) IncrBy(ctx context.Context, key string, delta int64) (int64, error) {
-	var out cacheCountResult
+	var out CacheCounter
 	if err := r.client.cacheDo(ctx, "POST", r.path("keys", "incr", key), cacheDeltaRequest{Delta: delta}, &out); err != nil {
 		return 0, err
 	}
@@ -214,9 +207,7 @@ func (r *CacheRef) IncrBy(ctx context.Context, key string, delta int64) (int64, 
 // Keys returns all keys matching a glob pattern. Use "*" for all keys,
 // "user:*" for prefix matching, "session:?" for single-character wildcard.
 func (r *CacheRef) Keys(ctx context.Context, pattern string) ([]string, error) {
-	var out struct {
-		Keys []string `json:"keys"`
-	}
+	var out CacheKeys
 	path := r.path("keys") + "?" + url.Values{"pattern": {pattern}}.Encode()
 	if err := r.client.cacheDo(ctx, "GET", path, nil, &out); err != nil {
 		return nil, err
@@ -242,9 +233,7 @@ func (r *CacheRef) Stats(ctx context.Context) (*CacheStats, error) {
 // expiry, -2s if the key doesn't exist or has expired. Any other failure,
 // including an unknown cache, is returned as an error.
 func (r *CacheRef) TTL(ctx context.Context, key string) (time.Duration, error) {
-	var out struct {
-		TTLRemaining int64 `json:"ttl_remaining"`
-	}
+	var out CacheKeyValue
 	err := r.client.cacheDo(ctx, "GET", r.path("keys", key), nil, &out)
 	if isKeyMiss(err) {
 		return -2 * time.Second, nil
@@ -268,9 +257,7 @@ func (r *CacheRef) Expire(ctx context.Context, key string, ttl time.Duration) er
 //	acquired, _ := cache.SetNX(ctx, "lock:resource", "owner-id", 30*time.Second)
 //	if acquired { /* got the lock */ }
 func (r *CacheRef) SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
-	var out struct {
-		Acquired bool `json:"acquired"`
-	}
+	var out CacheSetNX
 	if err := r.client.cacheDo(ctx, "POST", r.path("keys", "setnx", key), cacheValueRequest{Value: value, TTL: ttlSeconds(ttl)}, &out); err != nil {
 		return false, err
 	}
@@ -280,10 +267,7 @@ func (r *CacheRef) SetNX(ctx context.Context, key, value string, ttl time.Durati
 // GetSet atomically sets a key to a new value and returns the old value.
 // Returns ("", false, nil) if the key didn't exist.
 func (r *CacheRef) GetSet(ctx context.Context, key, value string, ttl time.Duration) (string, bool, error) {
-	var out struct {
-		OldValue string `json:"old_value"`
-		HadOld   bool   `json:"had_old"`
-	}
+	var out CacheGetSet
 	if err := r.client.cacheDo(ctx, "POST", r.path("keys", "getset", key), cacheValueRequest{Value: value, TTL: ttlSeconds(ttl)}, &out); err != nil {
 		return "", false, err
 	}
@@ -296,7 +280,7 @@ func (r *CacheRef) GetSet(ctx context.Context, key, value string, ttl time.Durat
 //	count, _ := cache.IncrWithTTL(ctx, "rate:ip:1.2.3.4", 1, 60*time.Second)
 //	if count > 100 { /* rate limited */ }
 func (r *CacheRef) IncrWithTTL(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
-	var out cacheCountResult
+	var out CacheCounter
 	if err := r.client.cacheDo(ctx, "POST", r.path("keys", "incrttl", key), cacheDeltaTTLRequest{Delta: delta, TTL: ttlSeconds(ttl)}, &out); err != nil {
 		return 0, err
 	}
@@ -357,14 +341,6 @@ type cacheScoreResult struct {
 	Score float64 `json:"score"`
 }
 
-type cacheEntriesResult struct {
-	Entries []SortedSetEntry `json:"entries"`
-}
-
-type cacheMessagesResult struct {
-	Messages []PubSubMessage `json:"messages"`
-}
-
 func rangeQuery(start, stop int) string {
 	return "?" + url.Values{"start": {strconv.Itoa(start)}, "stop": {strconv.Itoa(stop)}}.Encode()
 }
@@ -406,7 +382,7 @@ func (z *SortedSetRef) Rank(ctx context.Context, member string) (int64, error) {
 
 // Range returns members by rank range (inclusive, 0-based, negative from end).
 func (z *SortedSetRef) Range(ctx context.Context, start, stop int) ([]SortedSetEntry, error) {
-	var out cacheEntriesResult
+	var out SortedSetEntries
 	if err := z.cache.client.cacheDo(ctx, "GET", z.cache.path("zsets", z.name)+rangeQuery(start, stop), nil, &out); err != nil {
 		return nil, err
 	}
@@ -415,7 +391,7 @@ func (z *SortedSetRef) Range(ctx context.Context, start, stop int) ([]SortedSetE
 
 // RangeByScore returns members with scores between min and max (inclusive).
 func (z *SortedSetRef) RangeByScore(ctx context.Context, min, max float64) ([]SortedSetEntry, error) {
-	var out cacheEntriesResult
+	var out SortedSetEntries
 	query := url.Values{
 		"min": {strconv.FormatFloat(min, 'g', -1, 64)},
 		"max": {strconv.FormatFloat(max, 'g', -1, 64)},
@@ -437,7 +413,7 @@ func (z *SortedSetRef) Rem(ctx context.Context, members ...string) (int64, error
 
 // IncrBy increments a member's score by delta. Creates with delta as score if new.
 func (z *SortedSetRef) IncrBy(ctx context.Context, member string, delta float64) (float64, error) {
-	var out cacheScoreResult
+	var out SortedSetScore
 	body := struct {
 		Member string  `json:"member"`
 		Delta  float64 `json:"delta"`
@@ -559,7 +535,7 @@ func (p *PubSubRef) Publish(ctx context.Context, value string) (int64, error) {
 // Each consumer tracks its own cursor independently (broadcast pattern).
 // Automatically resumes from where it left off after reconnect.
 func (p *PubSubRef) Read(ctx context.Context, consumerID string, count int) ([]PubSubMessage, error) {
-	var out cacheMessagesResult
+	var out PubSubMessages
 	query := url.Values{"consumer": {consumerID}, "count": {strconv.Itoa(count)}}
 	if err := p.cache.client.cacheDo(ctx, "GET", p.path("read")+"?"+query.Encode(), nil, &out); err != nil {
 		return nil, err
@@ -578,9 +554,7 @@ func (p *PubSubRef) CreateGroup(ctx context.Context, groupName string) error {
 // Returns nil if no messages are available, and an APIError with status
 // 404 if the group doesn't exist.
 func (p *PubSubRef) Claim(ctx context.Context, groupName, consumerID string) (*PubSubMessage, error) {
-	var out struct {
-		Message *PubSubMessage `json:"message"`
-	}
+	var out PubSubClaim
 	query := url.Values{"consumer": {consumerID}}
 	if err := p.cache.client.cacheDo(ctx, "POST", p.path("group", groupName, "claim")+"?"+query.Encode(), nil, &out); err != nil {
 		return nil, err
@@ -600,7 +574,7 @@ func (p *PubSubRef) Ack(ctx context.Context, groupName string, seq int64) error 
 // Reclaim returns messages that have been pending longer than timeout
 // without being acked. Re-assigns them to the given consumer.
 func (p *PubSubRef) Reclaim(ctx context.Context, groupName, consumerID string, timeout time.Duration) ([]PubSubMessage, error) {
-	var out cacheMessagesResult
+	var out PubSubMessages
 	query := url.Values{"consumer": {consumerID}, "timeout": {strconv.Itoa(ttlSeconds(timeout))}}
 	if err := p.cache.client.cacheDo(ctx, "POST", p.path("group", groupName, "reclaim")+"?"+query.Encode(), nil, &out); err != nil {
 		return nil, err
@@ -677,14 +651,9 @@ func (l *ListRef) RPop(ctx context.Context) (string, error) {
 	return l.pop(ctx, "rpop")
 }
 
-type listRangeResult struct {
-	Values []string `json:"values"`
-	Length int64    `json:"length"`
-}
-
 // Range returns elements from start to stop (inclusive, 0-based, negative indices from end).
 func (l *ListRef) Range(ctx context.Context, start, stop int) ([]string, error) {
-	var out listRangeResult
+	var out ListRange
 	if err := l.cache.client.cacheDo(ctx, "GET", l.cache.path("lists", l.name)+rangeQuery(start, stop), nil, &out); err != nil {
 		return nil, err
 	}
@@ -693,7 +662,7 @@ func (l *ListRef) Range(ctx context.Context, start, stop int) ([]string, error) 
 
 // Len returns the length of the list.
 func (l *ListRef) Len(ctx context.Context) (int64, error) {
-	var out listRangeResult
+	var out ListRange
 	if err := l.cache.client.cacheDo(ctx, "GET", l.cache.path("lists", l.name)+rangeQuery(0, -1), nil, &out); err != nil {
 		return 0, err
 	}
@@ -738,9 +707,7 @@ func (s *SetRef) Rem(ctx context.Context, members ...string) (int64, error) {
 
 // Members returns all members of the set, sorted.
 func (s *SetRef) Members(ctx context.Context) ([]string, error) {
-	var out struct {
-		Members []string `json:"members"`
-	}
+	var out SetMembers
 	if err := s.cache.client.cacheDo(ctx, "GET", s.cache.path("sets", s.name), nil, &out); err != nil {
 		return nil, err
 	}
@@ -779,7 +746,7 @@ func (q *QueueRef) Enqueue(ctx context.Context, value string) (int64, error) {
 // Dequeue removes and returns the front element (oldest). Returns an
 // APIError with status 404 if the queue is empty.
 func (q *QueueRef) Dequeue(ctx context.Context) (string, error) {
-	var out cacheValueResult
+	var out PoppedValue
 	if err := q.cache.client.cacheDo(ctx, "POST", q.cache.path("queues", q.name, "dequeue"), nil, &out); err != nil {
 		return "", err
 	}
@@ -823,7 +790,7 @@ func (s *StackRef) Push(ctx context.Context, value string) (int64, error) {
 // Pop removes and returns the top element (newest). Returns an APIError
 // with status 404 if the stack is empty.
 func (s *StackRef) Pop(ctx context.Context) (string, error) {
-	var out cacheValueResult
+	var out PoppedValue
 	if err := s.cache.client.cacheDo(ctx, "POST", s.cache.path("stacks", s.name, "pop"), nil, &out); err != nil {
 		return "", err
 	}
@@ -882,9 +849,7 @@ func (h *HashRef) Get(ctx context.Context, field string) (string, error) {
 
 // GetAll returns all field-value pairs.
 func (h *HashRef) GetAll(ctx context.Context) (map[string]string, error) {
-	var out struct {
-		Fields map[string]string `json:"fields"`
-	}
+	var out HashFields
 	if err := h.cache.client.cacheDo(ctx, "GET", h.path(), nil, &out); err != nil {
 		return nil, err
 	}
@@ -942,9 +907,9 @@ type CacheStats struct {
 
 // CacheInfo describes a named cache instance.
 type CacheInfo struct {
-	Name     string  `json:"name"`
-	KeyCount int64   `json:"key_count"`
 	HitRate  float64 `json:"hit_rate"`
+	KeyCount int64   `json:"key_count"`
+	Name     string  `json:"name"`
 }
 
 // CreateCache creates a new named cache on the server. Returns an APIError
@@ -958,9 +923,7 @@ func (c *Client) CreateCache(ctx context.Context, name string) error {
 
 // ListCaches returns all named caches on the server.
 func (c *Client) ListCaches(ctx context.Context) ([]CacheInfo, error) {
-	var out struct {
-		Caches []CacheInfo `json:"caches"`
-	}
+	var out CacheList
 	if err := c.cacheDo(ctx, "GET", "/apps/cache/api/caches", nil, &out); err != nil {
 		return nil, err
 	}
